@@ -1,6 +1,9 @@
 # Production stack (NAS / Portainer / any single-host Docker).
 #
-#   docker compose -f docker-compose.prod.yml up -d --build
+# Uses prebuilt images published to GitHub Container Registry by CI on every
+# push to main — no building on the deployment host:
+#
+#   docker compose -f docker-compose.prod.yml up -d
 #
 # Required environment variables (set in Portainer's stack editor or a .env):
 #   SECRET_KEY         JWT signing key — generate with: openssl rand -hex 32
@@ -31,7 +34,7 @@ services:
       retries: 10
 
   backend:
-    build: ./backend
+    image: ghcr.io/jwapps-app/progenies-backend:latest
     restart: unless-stopped
     depends_on:
       db:
@@ -52,11 +55,7 @@ services:
       start_period: 20s
 
   web:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile.prod
-      args:
-        VITE_APP_NAME: ${APP_NAME:-Progenies}
+    image: ghcr.io/jwapps-app/progenies-web:latest
     restart: unless-stopped
     depends_on:
       - backend
