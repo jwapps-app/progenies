@@ -7,17 +7,21 @@
 /**
  * API base URL.
  *
- * If VITE_API_BASE_URL is set (e.g. a production domain), use it. Otherwise
- * derive it from the host the app was loaded from, on port 8000 — so the app
- * works whether opened at localhost, 127.0.0.1, or the machine's LAN IP
- * (e.g. http://192.168.1.50:5173 reaches the API at http://192.168.1.50:8000)
- * without per-host configuration.
+ * Resolution order:
+ * 1. VITE_API_BASE_URL, when set (API on a different domain).
+ * 2. Same origin, when the page is served on a standard port (80/443) — the
+ *    production setup, where the web server proxies /api and /auth to the
+ *    backend on one domain.
+ * 3. Otherwise (dev server on :5173, opened at localhost or a LAN IP) the same
+ *    host on port 8000, so no per-host configuration is needed.
  */
 const ENV_BASE = import.meta.env.VITE_API_BASE_URL?.trim();
 const BASE_URL =
   ENV_BASE && ENV_BASE.length > 0
     ? ENV_BASE
-    : `${window.location.protocol}//${window.location.hostname}:8000`;
+    : window.location.port === ""
+      ? ""
+      : `${window.location.protocol}//${window.location.hostname}:8000`;
 
 let accessToken: string | null = null;
 let onAuthLost: (() => void) | null = null;

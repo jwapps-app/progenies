@@ -19,8 +19,9 @@
         } catch (e) {}
       })();
     </script>
-    <!-- Brand name is applied at runtime from VITE_APP_NAME (see src/branding.ts). -->
-    <title>Genealogy</title>
+    <!-- %VITE_APP_NAME% is substituted by Vite at dev/build time; the runtime
+         title is also kept in sync from src/branding.ts. -->
+    <title>%VITE_APP_NAME% — Genealogy</title>
   </head>
   <body>
     <div id="root"></div>

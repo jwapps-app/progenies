@@ -1,0 +1,64 @@
+# Production stack (NAS / Portainer / any single-host Docker).
+#
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# Required environment variables (set in Portainer's stack editor or a .env):
+#   SECRET_KEY         JWT signing key — generate with: openssl rand -hex 32
+#   POSTGRES_PASSWORD  database password for this instance
+# Optional:
+#   HTTP_PORT          host port for the web app (default 8080)
+#   DATA_PATH          host folder for persistent data (default ./data)
+#   APP_NAME           display name (default Progenies)
+#
+# The web container serves the built SPA and proxies /api and /auth to the
+# backend on the same origin, so a reverse proxy / tunnel only needs to point
+# at HTTP_PORT. The database is not exposed outside the stack network.
+
+services:
+  db:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-progenies}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-genealogy}
+    volumes:
+      - ${DATA_PATH:-./data}/pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-progenies} -d ${POSTGRES_DB:-genealogy}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      APP_NAME: ${APP_NAME:-Progenies}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-progenies}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-genealogy}
+      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY (openssl rand -hex 32)}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-60}
+      REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS:-30}
+      BCRYPT_ROUNDS: ${BCRYPT_ROUNDS:-12}
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  web:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.prod
+      args:
+        VITE_APP_NAME: ${APP_NAME:-Progenies}
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "${HTTP_PORT:-8080}:80"

@@ -26,3 +26,4 @@ dist/
 scratch_*.py
 *.xlsx
 tsconfig.tsbuildinfo
+/data/
