@@ -51,3 +51,12 @@ def get_owned_tree(
     if tree is None or tree.is_deleted or tree.user_id != user.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tree not found")
     return tree
+
+
+def get_admin_user(user: User = Depends(get_current_user)) -> User:
+    """Require the authenticated user to be an administrator."""
+    if not user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Administrator access required"
+        )
+    return user

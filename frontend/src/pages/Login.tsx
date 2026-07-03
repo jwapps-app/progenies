@@ -1,5 +1,6 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { api } from "../api/client";
 import { useAuth } from "../store/auth";
 import { APP_NAME, APP_TAGLINE } from "../branding";
 import ThemeToggle from "../components/ui/ThemeToggle";
@@ -11,6 +12,19 @@ export default function LoginPage() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
+  // Open registration exists only to create the FIRST (administrator) account;
+  // after that the register tab is hidden and accounts come from the admin.
+  const [registrationOpen, setRegistrationOpen] = useState(false);
+
+  useEffect(() => {
+    api
+      .registrationOpen()
+      .then((open) => {
+        setRegistrationOpen(open);
+        if (open) setMode("register");
+      })
+      .catch(() => setRegistrationOpen(false));
+  }, []);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -18,8 +32,9 @@ export default function LoginPage() {
     if (mode === "register") {
       const ok = await register(username, password);
       if (ok) {
-        setNotice("Account created — please sign in.");
+        setNotice("Administrator account created — please sign in.");
         setMode("login");
+        setRegistrationOpen(false);
       }
       return;
     }
@@ -38,22 +53,29 @@ export default function LoginPage() {
           <p className="mt-1 text-sm text-gray-500 dark:text-slate-400">{APP_TAGLINE}</p>
         </div>
 
-        <div className="mb-6 flex rounded-lg bg-gray-100 p-1 text-sm font-medium dark:bg-slate-700">
-          {(["login", "register"] as const).map((m) => (
-            <button
-              key={m}
-              type="button"
-              onClick={() => setMode(m)}
-              className={`flex-1 rounded-md py-2 capitalize transition ${
-                mode === m
-                  ? "bg-white text-brand shadow dark:bg-slate-900 dark:text-brand-soft"
-                  : "text-gray-500 dark:text-slate-400"
-              }`}
-            >
-              {m === "login" ? "Sign in" : "Register"}
-            </button>
-          ))}
-        </div>
+        {registrationOpen ? (
+          <div className="mb-6 flex rounded-lg bg-gray-100 p-1 text-sm font-medium dark:bg-slate-700">
+            {(["login", "register"] as const).map((m) => (
+              <button
+                key={m}
+                type="button"
+                onClick={() => setMode(m)}
+                className={`flex-1 rounded-md py-2 capitalize transition ${
+                  mode === m
+                    ? "bg-white text-brand shadow dark:bg-slate-900 dark:text-brand-soft"
+                    : "text-gray-500 dark:text-slate-400"
+                }`}
+              >
+                {m === "login" ? "Sign in" : "Set up admin"}
+              </button>
+            ))}
+          </div>
+        ) : null}
+        {registrationOpen && mode === "register" && (
+          <p className="mb-4 text-center text-sm text-gray-500 dark:text-slate-400">
+            No accounts exist yet — create the administrator account.
+          </p>
+        )}
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
@@ -88,7 +110,7 @@ export default function LoginPage() {
             disabled={loading}
             className="w-full rounded-lg bg-brand py-2.5 font-medium text-white transition hover:bg-brand-light disabled:opacity-50"
           >
-            {loading ? "Please wait…" : mode === "login" ? "Sign in" : "Create account"}
+            {loading ? "Please wait…" : mode === "login" ? "Sign in" : "Create admin account"}
           </button>
         </form>
       </div>

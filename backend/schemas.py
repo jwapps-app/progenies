@@ -18,7 +18,18 @@ class UserOut(BaseModel):
 
     id: uuid.UUID
     username: str
+    is_admin: bool = False
     created_at: datetime
+
+
+class RegistrationStatus(BaseModel):
+    # TRUE only while no account exists yet: the first registration creates the
+    # administrator, after which open registration is closed.
+    open: bool
+
+
+class PasswordReset(BaseModel):
+    password: str = Field(min_length=8, max_length=128)
 
 
 class LoginRequest(BaseModel):
@@ -31,6 +42,7 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
     expires_in: int
     username: str
+    is_admin: bool = False
 
 
 # ---------------------------------------------------------------------------

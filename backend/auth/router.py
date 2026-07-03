@@ -2,9 +2,10 @@
 import uuid
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Response, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from auth.deps import get_current_user
 from auth.security import (
     create_access_token,
     create_refresh_token,
@@ -15,7 +16,7 @@ from auth.security import (
 from config import settings
 from database import get_db
 from models import User
-from schemas import LoginRequest, TokenResponse, UserCreate, UserOut
+from schemas import LoginRequest, RegistrationStatus, TokenResponse, UserCreate, UserOut
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -41,18 +42,40 @@ def _issue_tokens(response: Response, user: User) -> TokenResponse:
         access_token=create_access_token(subject),
         expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         username=user.username,
+        is_admin=user.is_admin,
     )
+
+
+@router.get("/registration", response_model=RegistrationStatus)
+def registration_status(db: Session = Depends(get_db)) -> RegistrationStatus:
+    """Public: whether open registration is available (only before any account
+    exists — the first registration creates the administrator)."""
+    return RegistrationStatus(open=db.scalar(select(func.count(User.id))) == 0)
 
 
 @router.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
 def register(payload: UserCreate, db: Session = Depends(get_db)) -> User:
-    existing = db.scalar(select(User).where(User.username == payload.username))
-    if existing is not None:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Username already taken")
-    user = User(username=payload.username, password_hash=hash_password(payload.password))
+    # Open registration is a bootstrap-only path: it creates the FIRST account
+    # (the administrator) and then closes. Further accounts are created by the
+    # admin via /api/users.
+    if db.scalar(select(func.count(User.id))) > 0:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Registration is closed — ask the administrator for an account",
+        )
+    user = User(
+        username=payload.username,
+        password_hash=hash_password(payload.password),
+        is_admin=True,
+    )
     db.add(user)
     db.commit()
     db.refresh(user)
+    return user
+
+
+@router.get("/me", response_model=UserOut)
+def me(user: User = Depends(get_current_user)) -> User:
     return user
 
 

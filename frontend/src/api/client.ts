@@ -106,14 +106,28 @@ function jsonBody(body: unknown): RequestInit {
 
 export const api = {
   // Auth
+  registrationOpen: () =>
+    request<{ open: boolean }>("/auth/registration").then((r) => r.open),
   register: (username: string, password: string) =>
     request("/auth/register", { method: "POST", ...jsonBody({ username, password }) }),
   login: (username: string, password: string) =>
-    request<{ access_token: string; expires_in: number; username: string }>("/auth/login", {
+    request<{ access_token: string; expires_in: number; username: string; is_admin: boolean }>(
+      "/auth/login",
+      { method: "POST", ...jsonBody({ username, password }) }
+    ),
+  logout: () => request<void>("/auth/logout", { method: "POST" }),
+  me: () => request<import("../types").UserInfo>("/auth/me"),
+
+  // User management (admin only)
+  listUsers: () => request<import("../types").UserInfo[]>("/api/users"),
+  createUser: (username: string, password: string) =>
+    request<import("../types").UserInfo>("/api/users", {
       method: "POST",
       ...jsonBody({ username, password }),
     }),
-  logout: () => request<void>("/auth/logout", { method: "POST" }),
+  deleteUser: (userId: string) => request<void>(`/api/users/${userId}`, { method: "DELETE" }),
+  resetUserPassword: (userId: string, password: string) =>
+    request<void>(`/api/users/${userId}/password`, { method: "POST", ...jsonBody({ password }) }),
 
   // Trees
   listTrees: () => request<import("../types").Tree[]>("/api/trees"),

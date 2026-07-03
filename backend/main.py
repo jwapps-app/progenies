@@ -12,6 +12,7 @@ from database import Base, engine
 from routers.duplicates import router as duplicates_router
 from routers.families import router as families_router
 from routers.gedcom import router as gedcom_router
+from routers.users import router as users_router
 from routers.individuals import router as individuals_router
 from routers.trees import router as trees_router
 from routers.visualization import router as visualization_router
@@ -49,6 +50,12 @@ _LIGHTWEIGHT_MIGRATIONS = (
     "CREATE INDEX IF NOT EXISTS ix_families_wife_id ON families (wife_id)",
     # Child->family lookups (ancestor CTE walks child rows by individual).
     "CREATE INDEX IF NOT EXISTS ix_children_individual_id ON children (individual_id)",
+    # First-account-is-admin: add the flag, and on existing installs promote the
+    # earliest account if no admin exists yet (safe to run repeatedly).
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE",
+    """UPDATE users SET is_admin = TRUE
+       WHERE id = (SELECT id FROM users ORDER BY created_at, id LIMIT 1)
+         AND NOT EXISTS (SELECT 1 FROM users WHERE is_admin)""",
 )
 
 
@@ -85,3 +92,4 @@ app.include_router(gedcom_router)
 app.include_router(visualization_router)
 app.include_router(duplicates_router)
 app.include_router(warnings_router)
+app.include_router(users_router)

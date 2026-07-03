@@ -33,6 +33,9 @@ class User(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
     username: Mapped[str] = mapped_column(Text, unique=True, nullable=False, index=True)
     password_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    # The first registered account is the administrator: open registration closes
+    # after it exists, and only admins can create/manage further accounts.
+    is_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     trees: Mapped[list["FamilyTree"]] = relationship(

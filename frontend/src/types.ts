@@ -1,3 +1,10 @@
+export interface UserInfo {
+  id: string;
+  username: string;
+  is_admin: boolean;
+  created_at: string;
+}
+
 export interface Tree {
   id: string;
   name: string;

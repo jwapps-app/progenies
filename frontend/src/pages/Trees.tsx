@@ -2,7 +2,8 @@ import { FormEvent, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api/client";
 import { useAuth } from "../store/auth";
-import type { Tree } from "../types";
+import type { Tree, UserInfo } from "../types";
+import Modal from "../components/ui/Modal";
 import ThemeToggle from "../components/ui/ThemeToggle";
 import {
   getGlobalOrientation,
@@ -17,6 +18,9 @@ export default function TreesPage() {
   const [globalOrientation, setGlobalOrientationState] = useState<Orientation>(
     getGlobalOrientation
   );
+  // Admin user management (only shown when the signed-in account is an admin).
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [showUsers, setShowUsers] = useState(false);
   const [loading, setLoading] = useState(true);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -36,6 +40,10 @@ export default function TreesPage() {
 
   useEffect(() => {
     void refresh();
+    api
+      .me()
+      .then((u) => setIsAdmin(u.is_admin))
+      .catch(() => setIsAdmin(false));
   }, []);
 
   async function handleCreate(e: FormEvent) {
@@ -69,6 +77,15 @@ export default function TreesPage() {
           <p className="text-sm text-gray-500 dark:text-slate-400">Signed in as {username}</p>
         </div>
         <div className="flex items-center gap-2">
+          {isAdmin && (
+            <button
+              onClick={() => setShowUsers(true)}
+              title="Manage user accounts"
+              className="rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-700"
+            >
+              Users
+            </button>
+          )}
           <button
             onClick={() => {
               const next: Orientation =
@@ -119,6 +136,8 @@ export default function TreesPage() {
         </button>
       </form>
 
+      {showUsers && <UsersPanel onClose={() => setShowUsers(false)} />}
+
       {error && <p className="mb-4 text-sm text-red-600 dark:text-red-400">{error}</p>}
 
       {loading ? (
@@ -152,5 +171,139 @@ export default function TreesPage() {
         </ul>
       )}
     </div>
+  );
+}
+
+/** Admin-only account management: list, create, reset password, delete. */
+function UsersPanel({ onClose }: { onClose: () => void }) {
+  const { username: myUsername } = useAuth();
+  const [users, setUsers] = useState<UserInfo[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [newName, setNewName] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function refresh() {
+    try {
+      setUsers(await api.listUsers());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load users");
+    }
+  }
+
+  useEffect(() => {
+    void refresh();
+  }, []);
+
+  async function handleCreate(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await api.createUser(newName.trim(), newPassword);
+      setNewName("");
+      setNewPassword("");
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create user");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleDelete(user: UserInfo) {
+    if (!confirm(`Delete "${user.username}" and ALL their trees? This cannot be undone.`)) return;
+    setError(null);
+    try {
+      await api.deleteUser(user.id);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete user");
+    }
+  }
+
+  async function handleResetPassword(user: UserInfo) {
+    const password = prompt(`New password for "${user.username}" (min 8 characters):`);
+    if (!password) return;
+    setError(null);
+    try {
+      await api.resetUserPassword(user.id, password);
+      alert(`Password updated for ${user.username}.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to reset password");
+    }
+  }
+
+  return (
+    <Modal title="Users" onClose={onClose}>
+      <div className="space-y-4">
+        <ul className="divide-y divide-gray-200 dark:divide-slate-700">
+          {users.map((u) => (
+            <li key={u.id} className="flex items-center justify-between py-2">
+              <div>
+                <span className="font-medium text-gray-800 dark:text-slate-100">{u.username}</span>
+                {u.is_admin && (
+                  <span className="ml-2 rounded bg-brand/10 px-1.5 py-0.5 text-xs font-medium text-brand dark:text-brand-soft">
+                    admin
+                  </span>
+                )}
+                {u.username === myUsername && (
+                  <span className="ml-2 text-xs text-gray-400 dark:text-slate-500">(you)</span>
+                )}
+              </div>
+              <div className="flex items-center gap-2 text-sm">
+                <button
+                  onClick={() => handleResetPassword(u)}
+                  className="text-gray-500 hover:text-brand dark:text-slate-400 dark:hover:text-brand-soft"
+                >
+                  Reset password
+                </button>
+                {u.username !== myUsername && (
+                  <button
+                    onClick={() => handleDelete(u)}
+                    className="text-gray-400 hover:text-red-600 dark:text-slate-500 dark:hover:text-red-400"
+                  >
+                    Delete
+                  </button>
+                )}
+              </div>
+            </li>
+          ))}
+        </ul>
+
+        <form onSubmit={handleCreate} className="space-y-2 border-t border-gray-200 pt-4 dark:border-slate-700">
+          <h3 className="text-sm font-semibold text-gray-700 dark:text-slate-200">Add a user</h3>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <input
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              placeholder="Username"
+              required
+              minLength={3}
+              className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand focus:outline-none dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100"
+            />
+            <input
+              type="password"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              placeholder="Password (min 8 chars)"
+              required
+              minLength={8}
+              autoComplete="new-password"
+              className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand focus:outline-none dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100"
+            />
+          </div>
+          <button
+            type="submit"
+            disabled={busy}
+            className="rounded-lg bg-brand px-3 py-2 text-sm font-medium text-white hover:bg-brand-light disabled:opacity-50"
+          >
+            {busy ? "Creating…" : "Create user"}
+          </button>
+        </form>
+
+        {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
+      </div>
+    </Modal>
   );
 }
