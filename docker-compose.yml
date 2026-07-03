@@ -1,0 +1,61 @@
+services:
+  db:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-kindred}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kindred}
+      POSTGRES_DB: ${POSTGRES_DB:-genealogy}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-kindred} -d ${POSTGRES_DB:-genealogy}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      APP_NAME: ${APP_NAME:-Progenies}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://kindred:kindred@db:5432/genealogy}
+      SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-60}
+      REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS:-30}
+      BCRYPT_ROUNDS: ${BCRYPT_ROUNDS:-12}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      # Leave blank to auto-detect the API from the page host (works for
+      # localhost and LAN IP). Set only when the API is on a different domain.
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
+      VITE_APP_NAME: ${VITE_APP_NAME:-Progenies}
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+
+volumes:
+  pgdata:

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#1e3a5f" />
+    <!-- Apply the saved (or system) theme before first paint to avoid a flash. -->
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem("theme");
+          var dark = t === "dark" || (!t && window.matchMedia("(prefers-color-scheme: dark)").matches);
+          if (dark) {
+            document.documentElement.classList.add("dark");
+            var m = document.querySelector('meta[name="theme-color"]');
+            if (m) m.setAttribute("content", "#0b1220");
+          }
+        } catch (e) {}
+      })();
+    </script>
+    <!-- Brand name is applied at runtime from VITE_APP_NAME (see src/branding.ts). -->
+    <title>Genealogy</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

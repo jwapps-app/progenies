@@ -1,0 +1,57 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Theme tokens. `:root` is light; `.dark` (set on <html>) overrides for dark
+   mode. The chart (D3) reads the --chart-* variables at draw time so the SVG
+   re-themes with the rest of the app. */
+:root {
+  --app-bg: #f8fafc;
+  --app-fg: #1f2937;
+
+  --chart-node-bg: #ffffff;
+  --chart-node-text: #1f2937;
+  --chart-node-muted: #64748b;
+  --chart-border-m: #2c5282;
+  --chart-border-f: #9b2c6f;
+  --chart-border-u: #64748b;
+  --chart-unknown-bg: #f1f5f9;
+  --chart-unknown-border: #cbd5e1;
+  --chart-unknown-text: #94a3b8;
+  --chart-link: #94a3b8;
+  --chart-marriage: #c9a227;
+  --chart-badge-text: #ffffff;
+  --chart-lens-bg: #f8fafc;
+}
+
+.dark {
+  --app-bg: #0b1220;
+  --app-fg: #e2e8f0;
+
+  --chart-node-bg: #1e293b;
+  --chart-node-text: #e2e8f0;
+  --chart-node-muted: #94a3b8;
+  --chart-border-m: #60a5fa;
+  --chart-border-f: #f472b6;
+  --chart-border-u: #94a3b8;
+  --chart-unknown-bg: #172033;
+  --chart-unknown-border: #475569;
+  --chart-unknown-text: #64748b;
+  --chart-link: #64748b;
+  --chart-marriage: #d8b13e;
+  --chart-badge-text: #1e293b;
+  --chart-lens-bg: #0f172a;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background-color: var(--app-bg);
+  color: var(--app-fg);
+}
