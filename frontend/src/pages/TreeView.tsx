@@ -1412,7 +1412,13 @@ export default function TreeViewPage() {
 
             {(() => {
               const parents = parentsOf(selected.id);
-              const partners = orderedMarriages(selected.id).filter((m) => m.coParent);
+              // Include single-parent families that have children (no co-parent
+              // recorded) so their child links stay editable — e.g. changing a
+              // child's relation to adopted. Empty partnerless "ghost" families
+              // (no co-parent AND no children) are still hidden.
+              const partners = orderedMarriages(selected.id).filter(
+                (m) => m.coParent || m.family.children.length > 0
+              );
               const kids = childrenOf(selected.id);
               if (!parents.length && !partners.length && !kids.length) return null;
               return (
@@ -1430,8 +1436,16 @@ export default function TreeViewPage() {
                           <li key={family.id} className="flex items-start gap-1.5">
                             <div className="min-w-0 flex-1">
                               <div className="flex items-center gap-1.5">
-                                <RelativeLink person={coParent!} onPick={handleSelect} />
-                                <StatusBadge family={family} />
+                                {coParent ? (
+                                  <>
+                                    <RelativeLink person={coParent} onPick={handleSelect} />
+                                    <StatusBadge family={family} />
+                                  </>
+                                ) : (
+                                  <span className="italic text-gray-500 dark:text-slate-400">
+                                    (no other parent)
+                                  </span>
+                                )}
                               </div>
                               {marriageDates(family) && (
                                 <div className="text-xs text-gray-400 dark:text-slate-500">
