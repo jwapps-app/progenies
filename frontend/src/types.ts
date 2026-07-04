@@ -19,6 +19,7 @@ export interface Individual {
   given_name: string | null;
   middle_name: string | null;
   surname: string | null;
+  married_name: string | null;
   sex: string | null;
   birth_date: string | null;
   birth_place: string | null;
@@ -73,6 +74,7 @@ export interface TreeNode {
   given_name: string | null;
   middle_name: string | null;
   surname: string | null;
+  married_name?: string | null;
   sex: string | null;
   birth_date: string | null;
   death_date: string | null;
@@ -112,16 +114,34 @@ export interface ImportSummary {
   warnings: string[];
 }
 
-export function displayName(
-  person:
-    | { given_name: string | null; middle_name?: string | null; surname: string | null }
-    | null
-    | undefined
-): string {
+type NamedPerson = {
+  given_name: string | null;
+  middle_name?: string | null;
+  surname: string | null;
+  married_name?: string | null;
+};
+
+/** The surname to display: the married name when set, otherwise the birth surname. */
+export function displaySurname(person: NamedPerson): string | null {
+  return person.married_name || person.surname || null;
+}
+
+export function displayName(person: NamedPerson | null | undefined): string {
   if (!person) return "Unknown";
-  const name = [person.given_name, person.middle_name, person.surname]
+  const name = [person.given_name, person.middle_name, displaySurname(person)]
     .filter(Boolean)
     .join(" ")
     .trim();
   return name || "Unknown";
+}
+
+/** Full name with the birth/maiden surname shown as "née …" when a married name
+ * is set — e.g. "Mary Jones née Smith". */
+export function fullNameWithMaiden(person: NamedPerson | null | undefined): string {
+  if (!person) return "Unknown";
+  const base = displayName(person);
+  if (person.married_name && person.surname && person.married_name !== person.surname) {
+    return `${base} née ${person.surname}`;
+  }
+  return base;
 }

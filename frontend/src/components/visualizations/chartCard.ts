@@ -11,6 +11,7 @@ export interface CardPerson {
   given_name: string | null;
   middle_name: string | null;
   surname: string | null;
+  married_name?: string | null;
   sex: string | null;
   birth_date: string | null;
   death_date: string | null;
@@ -73,7 +74,9 @@ export function nodeLabel(p: CardPerson): string {
         .map((m) => `${m[0].toUpperCase()}.`)
         .join(" ")
     : "";
-  const label = [p.given_name, initials, p.surname].filter(Boolean).join(" ").trim();
+  // Display the married surname when set, otherwise the birth surname.
+  const surname = p.married_name || p.surname;
+  const label = [p.given_name, initials, surname].filter(Boolean).join(" ").trim();
   return label || "Unknown";
 }
 

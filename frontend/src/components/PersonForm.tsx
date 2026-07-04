@@ -6,6 +6,7 @@ export interface PersonFields {
   given_name: string;
   middle_name: string;
   surname: string;
+  married_name: string;
   sex: "M" | "F" | "U";
   birth_date: string;
   birth_place: string;
@@ -28,6 +29,7 @@ function toFields(initial?: Partial<Individual>): PersonFields {
     given_name: initial?.given_name ?? "",
     middle_name: initial?.middle_name ?? "",
     surname: initial?.surname ?? "",
+    married_name: initial?.married_name ?? "",
     sex: (initial?.sex as "M" | "F" | "U") ?? "U",
     birth_date: initial?.birth_date ?? "",
     birth_place: initial?.birth_place ?? "",
@@ -123,14 +125,29 @@ export default function PersonForm({ initial, submitLabel, busy, onSubmit }: Pro
         </label>
       </div>
 
-      <label className="block">
-        <span className="mb-1 block text-xs font-medium text-gray-600 dark:text-slate-300">Surname</span>
-        <input
-          value={fields.surname}
-          onChange={(e) => update("surname", e.target.value)}
-          className={inputClass}
-        />
-      </label>
+      <div className="grid grid-cols-2 gap-3">
+        <label className="block">
+          <span className="mb-1 block text-xs font-medium text-gray-600 dark:text-slate-300">
+            Surname <span className="text-gray-400">(birth / maiden)</span>
+          </span>
+          <input
+            value={fields.surname}
+            onChange={(e) => update("surname", e.target.value)}
+            className={inputClass}
+          />
+        </label>
+        <label className="block">
+          <span className="mb-1 block text-xs font-medium text-gray-600 dark:text-slate-300">
+            Married name <span className="text-gray-400">(optional)</span>
+          </span>
+          <input
+            value={fields.married_name}
+            onChange={(e) => update("married_name", e.target.value)}
+            placeholder="Name taken on marriage"
+            className={inputClass}
+          />
+        </label>
+      </div>
 
       <label className="block">
         <span className="mb-1 block text-xs font-medium text-gray-600 dark:text-slate-300">Sex</span>
@@ -225,6 +242,7 @@ export function fieldsToPayload(fields: PersonFields): Partial<Individual> {
     given_name: blankToNull(fields.given_name),
     middle_name: blankToNull(fields.middle_name),
     surname: blankToNull(fields.surname),
+    married_name: blankToNull(fields.married_name),
     sex: fields.sex,
     birth_date: blankToNull(fields.birth_date),
     birth_place: blankToNull(fields.birth_place),

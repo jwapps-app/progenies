@@ -94,6 +94,13 @@ def import_gedcom(db: Session, tree: FamilyTree, content: str, filename: str | N
         if rec.xref is None:
             continue
         given, middle, surname = _split_name(rec.value_of("NAME"))
+        # A NAME record tagged TYPE married carries the married surname.
+        married_name: str | None = None
+        for name_node in rec.children_with("NAME"):
+            type_node = name_node.child("TYPE")
+            if type_node is not None and (type_node.value or "").strip().lower() == "married":
+                _, _, married_name = _split_name(name_node.value)
+                break
         birth_date, birth_place = _event(rec, "BIRT")
         death_date, death_place = _event(rec, "DEAT")
         sex = rec.value_of("SEX")
@@ -104,6 +111,7 @@ def import_gedcom(db: Session, tree: FamilyTree, content: str, filename: str | N
             given_name=given,
             middle_name=middle,
             surname=surname,
+            married_name=married_name,
             sex=sex,
             birth_date=birth_date,
             birth_place=birth_place,

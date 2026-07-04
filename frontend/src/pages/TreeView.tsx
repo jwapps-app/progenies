@@ -42,6 +42,17 @@ interface FamilyForm {
 }
 type UndoEntry = { label: string; run: () => Promise<unknown> };
 
+/** Best-effort birth year from a free-text date ("c. 1850", "ABT 1900 BC",
+ * "1780"). BC years are negative so they sort before AD. Returns null when no
+ * year is present (those children sort last when ordering by birth). */
+function birthYear(date: string | null | undefined): number | null {
+  if (!date) return null;
+  const m = date.match(/\d{1,5}/);
+  if (!m) return null;
+  const year = parseInt(m[0], 10);
+  return /\bb\.?\s*c\.?(\s*e\.?)?\b/i.test(date) ? -year : year;
+}
+
 /** Returns a callback whose IDENTITY never changes but which always invokes the
  * latest `fn`. Handlers passed to the chart components must be stable — they sit
  * in the chart effect's dependency array, and an unstable identity would tear
@@ -735,6 +746,37 @@ export default function TreeViewPage() {
     }
   }
 
+  // Order a family's children oldest-first by birth date. Children with no
+  // parseable birth year keep their current relative order and sort to the end.
+  async function sortChildrenByBirth(family: Family) {
+    if (!treeId) return;
+    const current = [...family.children].sort(
+      (a, b) => (a.birth_order ?? Infinity) - (b.birth_order ?? Infinity)
+    );
+    const withPos = current.map((c, i) => ({
+      c,
+      pos: i,
+      year: birthYear(personById.get(c.individual_id)?.birth_date ?? null),
+    }));
+    withPos.sort((a, b) => {
+      if (a.year === null && b.year === null) return a.pos - b.pos;
+      if (a.year === null) return 1;
+      if (b.year === null) return -1;
+      return a.year - b.year; // oldest (earliest / most-negative BC) first
+    });
+    setBusy(true);
+    try {
+      await api.updateFamily(treeId, family.id, {
+        children: withPos.map((w, i) => ({ ...childRef(w.c), birth_order: i + 1 })),
+      });
+      await reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to sort children");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   // Detach a child from a family (removes the parent link; the person stays).
   async function detachChild(family: Family, childId: string) {
     if (!treeId) return;
@@ -977,6 +1019,8 @@ export default function TreeViewPage() {
       .filter((p) =>
         [
           displayName(p),
+          p.surname,
+          p.married_name,
           p.birth_date,
           p.birth_place,
           p.death_date,
@@ -1353,6 +1397,9 @@ export default function TreeViewPage() {
               </button>
             </div>
             <dl className="mb-4 space-y-1 text-sm text-gray-600 dark:text-slate-300">
+              {selected.married_name && selected.surname && selected.married_name !== selected.surname && (
+                <Detail label="née" value={selected.surname} />
+              )}
               <Detail label="Sex" value={sexLabel(selected.sex)} />
               <Detail label="Born" value={joinDatePlace(selected.birth_date, selected.birth_place)} />
               <Detail label="Died" value={joinDatePlace(selected.death_date, selected.death_place)} />
@@ -1683,9 +1730,21 @@ export default function TreeViewPage() {
 
                 {kids.length > 0 && (
                   <div>
-                    <p className="mb-1 text-xs font-medium text-gray-600 dark:text-slate-300">
-                      Children (birth order)
-                    </p>
+                    <div className="mb-1 flex items-center justify-between">
+                      <p className="text-xs font-medium text-gray-600 dark:text-slate-300">
+                        Children (birth order — oldest first)
+                      </p>
+                      {kids.length > 1 && (
+                        <button
+                          onClick={() => sortChildrenByBirth(fam)}
+                          disabled={busy}
+                          className="text-xs text-brand hover:underline disabled:opacity-40 dark:text-brand-soft"
+                          title="Reorder oldest-first using each child's birth date"
+                        >
+                          Sort by birth date
+                        </button>
+                      )}
+                    </div>
                     <ul className="space-y-1">
                       {kids.map((c, i) => (
                         <li key={c.individual_id} className="flex items-center gap-1.5">

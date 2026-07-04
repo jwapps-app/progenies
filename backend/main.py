@@ -44,6 +44,7 @@ _LIGHTWEIGHT_MIGRATIONS = (
     "ALTER TABLE families ADD COLUMN IF NOT EXISTS unmarried BOOLEAN NOT NULL DEFAULT FALSE",
     "ALTER TABLE children ADD COLUMN IF NOT EXISTS relation TEXT NOT NULL DEFAULT 'biological'",
     "ALTER TABLE individuals ADD COLUMN IF NOT EXISTS photo_url TEXT",
+    "ALTER TABLE individuals ADD COLUMN IF NOT EXISTS married_name TEXT",
     # Spouse lookups (visualization, merge) filter families by husband/wife —
     # without these every such query is a sequential scan of all families.
     "CREATE INDEX IF NOT EXISTS ix_families_husband_id ON families (husband_id)",
