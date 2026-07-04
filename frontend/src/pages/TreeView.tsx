@@ -1528,9 +1528,82 @@ export default function TreeViewPage() {
                       </ul>
                     </div>
                   )}
-                  {kids.length > 0 && (
-                    <Relatives label="Children" people={kids} onPick={handleSelect} />
-                  )}
+                  {kids.length > 0 &&
+                    (() => {
+                      // Group children under the family (marriage) they belong to,
+                      // so the ▲▼ arrows renumber birth_order within that family.
+                      // Reordering is per-family; a person with two marriages gets
+                      // one arrow-list per set of children.
+                      const childFamilies = orderedMarriages(selected.id).filter(
+                        (m) => m.family.children.length > 0
+                      );
+                      const multi = childFamilies.length > 1;
+                      return (
+                        <div>
+                          <p className="mb-1 text-xs font-medium text-gray-500 dark:text-slate-400">
+                            Children{canEdit ? " (birth order — oldest first)" : ""}
+                          </p>
+                          <div className="space-y-2">
+                            {childFamilies.map(({ family, coParent }) => {
+                              const ordered = [...family.children]
+                                .sort(
+                                  (a, b) =>
+                                    (a.birth_order ?? Infinity) - (b.birth_order ?? Infinity)
+                                )
+                                .map((c) => ({ ref: c, person: personById.get(c.individual_id) }))
+                                .filter((x) => x.person);
+                              if (ordered.length === 0) return null;
+                              return (
+                                <div key={family.id}>
+                                  {multi && (
+                                    <p className="mb-0.5 text-[11px] text-gray-400 dark:text-slate-500">
+                                      with {coParent ? displayName(coParent) : "(unknown)"}
+                                    </p>
+                                  )}
+                                  <ul className="space-y-1.5">
+                                    {ordered.map(({ ref, person }, i, arr) => (
+                                      <li
+                                        key={ref.individual_id}
+                                        className="flex items-center gap-1.5"
+                                      >
+                                        <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                                          <RelativeLink person={person!} onPick={handleSelect} />
+                                          {ref.relation !== "biological" && (
+                                            <span className="rounded bg-amber-100 px-1 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-950/50 dark:text-amber-300">
+                                              {ref.relation}
+                                            </span>
+                                          )}
+                                        </div>
+                                        {canEdit && arr.length > 1 && (
+                                          <span className="flex shrink-0 items-center">
+                                            <button
+                                              onClick={() => moveChild(family, ref.individual_id, -1)}
+                                              disabled={i === 0 || busy}
+                                              className="px-1 text-gray-400 hover:text-gray-700 disabled:opacity-30 dark:text-slate-500 dark:hover:text-slate-200"
+                                              title="Move earlier (older)"
+                                            >
+                                              ▲
+                                            </button>
+                                            <button
+                                              onClick={() => moveChild(family, ref.individual_id, 1)}
+                                              disabled={i === arr.length - 1 || busy}
+                                              className="px-1 text-gray-400 hover:text-gray-700 disabled:opacity-30 dark:text-slate-500 dark:hover:text-slate-200"
+                                              title="Move later (younger)"
+                                            >
+                                              ▼
+                                            </button>
+                                          </span>
+                                        )}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })()}
                 </div>
               );
             })()}
