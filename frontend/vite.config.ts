@@ -36,6 +36,26 @@ export default defineConfig(({ mode, command }) => {
             },
             workbox: {
               navigateFallbackDenylist: [/^\/api/, /^\/auth/],
+              // Take control and drop the previous version's precache as soon
+              // as a new service worker activates, so a deploy doesn't leave
+              // devices serving a stale app shell.
+              clientsClaim: true,
+              skipWaiting: true,
+              cleanupOutdatedCaches: true,
+              // Always try the network for the app HTML first (fall back to the
+              // cached shell only when offline). This is what stops "my update
+              // never shows up": the newest index.html — which points at the
+              // newest JS — is fetched whenever the device is online.
+              runtimeCaching: [
+                {
+                  urlPattern: ({ request }: { request: Request }) => request.mode === "navigate",
+                  handler: "NetworkFirst",
+                  options: {
+                    cacheName: "app-shell",
+                    networkTimeoutSeconds: 5,
+                  },
+                },
+              ],
             },
           }),
         ]
