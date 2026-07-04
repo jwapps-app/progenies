@@ -83,7 +83,7 @@ function DateField({
 
   return (
     <div className="block">
-      <div className="mb-1 flex items-center justify-between gap-2">
+      <div className="mb-1 flex h-6 items-center justify-between gap-2">
         <span className="text-xs font-medium text-gray-600 dark:text-slate-300">{label}</span>
         <span className="flex gap-1">
           {tab("exact", "Exact")}
@@ -247,7 +247,9 @@ export default function PersonForm({ initial, submitLabel, busy, onSubmit }: Pro
           onChange={(v) => update("birth_date", v)}
         />
         <label className="block">
-          <span className="mb-1 block text-xs font-medium text-gray-600 dark:text-slate-300">Birth place</span>
+          <span className="mb-1 flex h-6 items-center text-xs font-medium text-gray-600 dark:text-slate-300">
+            Birth place
+          </span>
           <input
             value={fields.birth_place}
             onChange={(e) => update("birth_place", e.target.value)}
@@ -263,7 +265,9 @@ export default function PersonForm({ initial, submitLabel, busy, onSubmit }: Pro
           onChange={(v) => update("death_date", v)}
         />
         <label className="block">
-          <span className="mb-1 block text-xs font-medium text-gray-600 dark:text-slate-300">Death place</span>
+          <span className="mb-1 flex h-6 items-center text-xs font-medium text-gray-600 dark:text-slate-300">
+            Death place
+          </span>
           <input
             value={fields.death_place}
             onChange={(e) => update("death_place", e.target.value)}

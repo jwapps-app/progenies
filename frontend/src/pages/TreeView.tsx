@@ -1564,22 +1564,43 @@ export default function TreeViewPage() {
                                     {ordered.map(({ ref, person }, i, arr) => (
                                       <li
                                         key={ref.individual_id}
-                                        className="flex items-center gap-1.5"
+                                        className="flex items-center gap-1"
                                       >
-                                        <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                                        <div className="min-w-0 flex-1 truncate">
                                           <RelativeLink person={person!} onPick={handleSelect} />
-                                          {ref.relation !== "biological" && (
-                                            <span className="rounded bg-amber-100 px-1 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-950/50 dark:text-amber-300">
+                                        </div>
+                                        {canEdit ? (
+                                          <select
+                                            value={ref.relation}
+                                            onChange={(e) =>
+                                              setChildRelationship(
+                                                family,
+                                                ref.individual_id,
+                                                e.target.value
+                                              )
+                                            }
+                                            disabled={busy}
+                                            title="Relationship to this parent"
+                                            className="shrink-0 rounded border border-gray-200 bg-white px-1 py-0.5 text-[11px] text-gray-600 focus:border-brand focus:outline-none disabled:opacity-50 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-300"
+                                          >
+                                            <option value="biological">Bio</option>
+                                            <option value="adopted">Adopted</option>
+                                            <option value="step">Step</option>
+                                            <option value="foster">Foster</option>
+                                          </select>
+                                        ) : (
+                                          ref.relation !== "biological" && (
+                                            <span className="shrink-0 rounded bg-amber-100 px-1 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-950/50 dark:text-amber-300">
                                               {ref.relation}
                                             </span>
-                                          )}
-                                        </div>
+                                          )
+                                        )}
                                         {canEdit && arr.length > 1 && (
                                           <span className="flex shrink-0 items-center">
                                             <button
                                               onClick={() => moveChild(family, ref.individual_id, -1)}
                                               disabled={i === 0 || busy}
-                                              className="px-1 text-gray-400 hover:text-gray-700 disabled:opacity-30 dark:text-slate-500 dark:hover:text-slate-200"
+                                              className="px-0.5 text-gray-400 hover:text-gray-700 disabled:opacity-30 dark:text-slate-500 dark:hover:text-slate-200"
                                               title="Move earlier (older)"
                                             >
                                               ▲
@@ -1587,7 +1608,7 @@ export default function TreeViewPage() {
                                             <button
                                               onClick={() => moveChild(family, ref.individual_id, 1)}
                                               disabled={i === arr.length - 1 || busy}
-                                              className="px-1 text-gray-400 hover:text-gray-700 disabled:opacity-30 dark:text-slate-500 dark:hover:text-slate-200"
+                                              className="px-0.5 text-gray-400 hover:text-gray-700 disabled:opacity-30 dark:text-slate-500 dark:hover:text-slate-200"
                                               title="Move later (younger)"
                                             >
                                               ▼
