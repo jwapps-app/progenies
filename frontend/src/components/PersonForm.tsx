@@ -83,7 +83,16 @@ function DateField({
 
   return (
     <div className="block">
-      <span className="mb-1 block text-xs font-medium text-gray-600 dark:text-slate-300">{label}</span>
+      {/* Label + mode toggle share one row, kept at the same fixed height as
+          every other field label so the date/place inputs line up and the grid
+          stays uniform. */}
+      <div className="mb-1 flex h-6 items-center justify-between gap-2">
+        <span className="text-xs font-medium text-gray-600 dark:text-slate-300">{label}</span>
+        <span className="flex gap-1">
+          {tab("exact", "Exact")}
+          {tab("estimate", "Estimate")}
+        </span>
+      </div>
       {mode === "exact" ? (
         <input
           type="date"
@@ -99,10 +108,6 @@ function DateField({
           className={inputClass}
         />
       )}
-      <div className="mt-1.5 flex gap-1">
-        {tab("exact", "Exact")}
-        {tab("estimate", "Estimate")}
-      </div>
     </div>
   );
 }
@@ -170,7 +175,7 @@ export default function PersonForm({ initial, submitLabel, busy, onSubmit }: Pro
 
       <div className="grid grid-cols-2 gap-3">
         <label className="block">
-          <span className="mb-1 block text-xs font-medium text-gray-600 dark:text-slate-300">Given name</span>
+          <span className="mb-1 block h-6 leading-6 text-xs font-medium text-gray-600 dark:text-slate-300">Given name</span>
           <input
             value={fields.given_name}
             onChange={(e) => update("given_name", e.target.value)}
@@ -179,7 +184,7 @@ export default function PersonForm({ initial, submitLabel, busy, onSubmit }: Pro
           />
         </label>
         <label className="block">
-          <span className="mb-1 block text-xs font-medium text-gray-600 dark:text-slate-300">Middle name(s)</span>
+          <span className="mb-1 block h-6 leading-6 text-xs font-medium text-gray-600 dark:text-slate-300">Middle name(s)</span>
           <input
             value={fields.middle_name}
             onChange={(e) => update("middle_name", e.target.value)}
@@ -190,7 +195,7 @@ export default function PersonForm({ initial, submitLabel, busy, onSubmit }: Pro
 
       <div className="grid grid-cols-2 gap-3">
         <label className="block">
-          <span className="mb-1 block text-xs font-medium text-gray-600 dark:text-slate-300">
+          <span className="mb-1 block h-6 leading-6 text-xs font-medium text-gray-600 dark:text-slate-300">
             Surname <span className="text-gray-400">(birth / maiden)</span>
           </span>
           <input
@@ -200,7 +205,7 @@ export default function PersonForm({ initial, submitLabel, busy, onSubmit }: Pro
           />
         </label>
         <label className="block">
-          <span className="mb-1 block text-xs font-medium text-gray-600 dark:text-slate-300">
+          <span className="mb-1 block h-6 leading-6 text-xs font-medium text-gray-600 dark:text-slate-300">
             Married name <span className="text-gray-400">(optional)</span>
           </span>
           <input
@@ -214,7 +219,7 @@ export default function PersonForm({ initial, submitLabel, busy, onSubmit }: Pro
 
       <div className="grid grid-cols-2 gap-3">
         <label className="block">
-          <span className="mb-1 block text-xs font-medium text-gray-600 dark:text-slate-300">
+          <span className="mb-1 block h-6 leading-6 text-xs font-medium text-gray-600 dark:text-slate-300">
             Nickname <span className="text-gray-400">(optional)</span>
           </span>
           <input
@@ -225,7 +230,7 @@ export default function PersonForm({ initial, submitLabel, busy, onSubmit }: Pro
           />
         </label>
         <label className="block">
-          <span className="mb-1 block text-xs font-medium text-gray-600 dark:text-slate-300">Sex</span>
+          <span className="mb-1 block h-6 leading-6 text-xs font-medium text-gray-600 dark:text-slate-300">Sex</span>
           <select
             value={fields.sex}
             onChange={(e) => update("sex", e.target.value as PersonFields["sex"])}
@@ -245,7 +250,7 @@ export default function PersonForm({ initial, submitLabel, busy, onSubmit }: Pro
           onChange={(v) => update("birth_date", v)}
         />
         <label className="block">
-          <span className="mb-1 block text-xs font-medium text-gray-600 dark:text-slate-300">Birth place</span>
+          <span className="mb-1 block h-6 leading-6 text-xs font-medium text-gray-600 dark:text-slate-300">Birth place</span>
           <input
             value={fields.birth_place}
             onChange={(e) => update("birth_place", e.target.value)}
@@ -261,7 +266,7 @@ export default function PersonForm({ initial, submitLabel, busy, onSubmit }: Pro
           onChange={(v) => update("death_date", v)}
         />
         <label className="block">
-          <span className="mb-1 block text-xs font-medium text-gray-600 dark:text-slate-300">Death place</span>
+          <span className="mb-1 block h-6 leading-6 text-xs font-medium text-gray-600 dark:text-slate-300">Death place</span>
           <input
             value={fields.death_place}
             onChange={(e) => update("death_place", e.target.value)}
@@ -271,7 +276,7 @@ export default function PersonForm({ initial, submitLabel, busy, onSubmit }: Pro
       </div>
 
       <label className="block">
-        <span className="mb-1 block text-xs font-medium text-gray-600 dark:text-slate-300">
+        <span className="mb-1 block h-6 leading-6 text-xs font-medium text-gray-600 dark:text-slate-300">
           Age / lifespan <span className="text-gray-400 dark:text-slate-500">(if exact dates unknown)</span>
         </span>
         <input
@@ -283,7 +288,7 @@ export default function PersonForm({ initial, submitLabel, busy, onSubmit }: Pro
       </label>
 
       <label className="block">
-        <span className="mb-1 block text-xs font-medium text-gray-600 dark:text-slate-300">Notes</span>
+        <span className="mb-1 block h-6 leading-6 text-xs font-medium text-gray-600 dark:text-slate-300">Notes</span>
         <textarea
           value={fields.notes}
           onChange={(e) => update("notes", e.target.value)}
