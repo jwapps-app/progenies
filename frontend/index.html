@@ -3,6 +3,14 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- Installed-app (PWA) icons. iOS/iPadOS ignore the manifest's icons for
+         the home-screen icon and use apple-touch-icon; Android/Chrome use the
+         manifest. Keep both so "Add to Home Screen" gets a real icon. -->
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="%VITE_APP_NAME%" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#1e3a5f" />
     <!-- Apply the saved (or system) theme before first paint to avoid a flash. -->

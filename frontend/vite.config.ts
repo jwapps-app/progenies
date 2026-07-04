@@ -17,7 +17,7 @@ export default defineConfig(({ mode, command }) => {
       ? [
           VitePWA({
             registerType: "autoUpdate",
-            includeAssets: ["favicon.svg"],
+            includeAssets: ["favicon.svg", "apple-touch-icon.png"],
             manifest: {
               name: `${appName} — Genealogy`,
               short_name: appName,
@@ -27,8 +27,11 @@ export default defineConfig(({ mode, command }) => {
               display: "standalone",
               start_url: "/",
               icons: [
-                { src: "icon-192.png", sizes: "192x192", type: "image/png" },
-                { src: "icon-512.png", sizes: "512x512", type: "image/png" },
+                { src: "icon-192.png", sizes: "192x192", type: "image/png", purpose: "any" },
+                { src: "icon-512.png", sizes: "512x512", type: "image/png", purpose: "any" },
+                // Same square art doubles as the Android maskable icon — the
+                // mark sits inside the safe zone so corner masking won't clip it.
+                { src: "icon-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
               ],
             },
             workbox: {
@@ -38,8 +41,20 @@ export default defineConfig(({ mode, command }) => {
         ]
       : [];
 
+  // Substitute %VITE_APP_NAME% in index.html at build time (title + the PWA
+  // apple-mobile-web-app-title). Vite's built-in %ENV% replacement only fires
+  // when the var is actually set, so without this the static HTML ships the
+  // literal token — harmless for the browser tab (JS fixes it at runtime) but
+  // wrong for the installed app's name, which is read from the static markup.
+  const htmlAppName = {
+    name: "html-app-name",
+    transformIndexHtml(html: string) {
+      return html.replace(/%VITE_APP_NAME%/g, appName);
+    },
+  };
+
   return {
-  plugins: [react(), ...pwa],
+  plugins: [react(), htmlAppName, ...pwa],
   server: {
     port: 5173,
     host: "0.0.0.0",
