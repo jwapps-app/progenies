@@ -53,8 +53,43 @@ export default defineConfig(({ mode, command }) => {
     },
   };
 
+  // Dev-only: serve a self-destructing service worker at /sw.js. If a device
+  // ever registered a production service worker on this origin (e.g. from a
+  // prod build once served on this port), it caches the app shell and keeps
+  // showing stale code no matter how you refresh. On its next update check the
+  // browser fetches this script, which unregisters the SW, clears all caches,
+  // and reloads open tabs — self-healing the "my changes never show up" trap.
+  // Not part of the production build, where VitePWA emits the real sw.js.
+  const killDevServiceWorker = {
+    name: "kill-dev-service-worker",
+    apply: "serve" as const,
+    configureServer(server: { middlewares: { use: (fn: (req: any, res: any, next: () => void) => void) => void } }) {
+      const selfDestruct = [
+        "self.addEventListener('install', () => self.skipWaiting());",
+        "self.addEventListener('activate', (event) => {",
+        "  event.waitUntil((async () => {",
+        "    try { const keys = await caches.keys(); await Promise.all(keys.map((k) => caches.delete(k))); } catch (e) {}",
+        "    try { await self.registration.unregister(); } catch (e) {}",
+        "    const clients = await self.clients.matchAll({ type: 'window' });",
+        "    clients.forEach((c) => c.navigate(c.url));",
+        "  })());",
+        "});",
+      ].join("\n");
+      server.middlewares.use((req, res, next) => {
+        const url = (req.url || "").split("?")[0];
+        if (url === "/sw.js" || url === "/service-worker.js") {
+          res.setHeader("Content-Type", "application/javascript");
+          res.setHeader("Cache-Control", "no-store");
+          res.end(selfDestruct);
+          return;
+        }
+        next();
+      });
+    },
+  };
+
   return {
-  plugins: [react(), htmlAppName, ...pwa],
+  plugins: [react(), htmlAppName, killDevServiceWorker, ...pwa],
   server: {
     port: 5173,
     host: "0.0.0.0",
