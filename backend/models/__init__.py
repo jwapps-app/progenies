@@ -68,6 +68,37 @@ class FamilyTree(Base):
     sources: Mapped[list["Source"]] = relationship(
         back_populates="tree", cascade="all, delete-orphan"
     )
+    shares: Mapped[list["TreeShare"]] = relationship(
+        back_populates="tree", cascade="all, delete-orphan"
+    )
+
+
+class TreeShare(Base):
+    """A collaborator grant: another user's access to a tree they don't own.
+
+    The tree's `user_id` is always the owner (full control, including sharing);
+    a share row grants a second user either read-only ('viewer') or edit
+    ('editor') access. Both foreign keys cascade, so deleting the tree or the
+    collaborator removes the grant automatically.
+    """
+
+    __tablename__ = "tree_shares"
+
+    tree_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("family_trees.id", ondelete="CASCADE"), primary_key=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True, index=True
+    )
+    role: Mapped[str] = mapped_column(Text, nullable=False, default="editor")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    tree: Mapped["FamilyTree"] = relationship(back_populates="shares")
+    user: Mapped["User"] = relationship()
+
+    __table_args__ = (
+        CheckConstraint("role IN ('viewer', 'editor')", name="ck_tree_share_role"),
+    )
 
 
 class Individual(Base):

@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from auth.deps import get_owned_tree
+from auth.deps import get_accessible_tree, get_editable_tree
 from database import get_db
 from models import Child, Family, FamilyTree, Individual
 from schemas import ChildRef, FamilyCreate, FamilyOut, FamilyUpdate
@@ -52,7 +52,7 @@ def _sync_children(db: Session, fam: Family, refs: list[ChildRef], tree: FamilyT
 
 @router.get("", response_model=list[FamilyOut])
 def list_families(
-    tree: FamilyTree = Depends(get_owned_tree), db: Session = Depends(get_db)
+    tree: FamilyTree = Depends(get_accessible_tree), db: Session = Depends(get_db)
 ) -> list[Family]:
     stmt = select(Family).where(Family.tree_id == tree.id)
     return list(db.scalars(stmt))
@@ -61,7 +61,7 @@ def list_families(
 @router.post("", response_model=FamilyOut, status_code=status.HTTP_201_CREATED)
 def create_family(
     payload: FamilyCreate,
-    tree: FamilyTree = Depends(get_owned_tree),
+    tree: FamilyTree = Depends(get_editable_tree),
     db: Session = Depends(get_db),
 ) -> Family:
     _validate_member(db, tree, payload.husband_id)
@@ -103,7 +103,7 @@ def create_family(
 @router.get("/{family_id}", response_model=FamilyOut)
 def get_family(
     family_id: uuid.UUID,
-    tree: FamilyTree = Depends(get_owned_tree),
+    tree: FamilyTree = Depends(get_accessible_tree),
     db: Session = Depends(get_db),
 ) -> Family:
     return _get_family(db, tree, family_id)
@@ -113,7 +113,7 @@ def get_family(
 def update_family(
     family_id: uuid.UUID,
     payload: FamilyUpdate,
-    tree: FamilyTree = Depends(get_owned_tree),
+    tree: FamilyTree = Depends(get_editable_tree),
     db: Session = Depends(get_db),
 ) -> Family:
     fam = _get_family(db, tree, family_id)
@@ -135,7 +135,7 @@ def update_family(
 @router.delete("/{family_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_family(
     family_id: uuid.UUID,
-    tree: FamilyTree = Depends(get_owned_tree),
+    tree: FamilyTree = Depends(get_editable_tree),
     db: Session = Depends(get_db),
 ) -> None:
     fam = _get_family(db, tree, family_id)

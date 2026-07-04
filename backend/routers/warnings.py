@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from auth.deps import get_owned_tree
+from auth.deps import get_accessible_tree, get_editable_tree
 from database import get_db
 from models import DismissedWarning, FamilyTree
 from schemas import WarningKeyRequest
@@ -13,7 +13,7 @@ router = APIRouter(prefix="/api/trees/{tree_id}/warnings", tags=["warnings"])
 
 @router.get("/dismissed", response_model=list[str])
 def list_dismissed(
-    tree: FamilyTree = Depends(get_owned_tree), db: Session = Depends(get_db)
+    tree: FamilyTree = Depends(get_accessible_tree), db: Session = Depends(get_db)
 ) -> list[str]:
     return list(
         db.scalars(
@@ -25,7 +25,7 @@ def list_dismissed(
 @router.post("/dismiss", status_code=status.HTTP_204_NO_CONTENT)
 def dismiss(
     payload: WarningKeyRequest,
-    tree: FamilyTree = Depends(get_owned_tree),
+    tree: FamilyTree = Depends(get_editable_tree),
     db: Session = Depends(get_db),
 ) -> None:
     existing = db.get(DismissedWarning, {"tree_id": tree.id, "warning_key": payload.key})
@@ -37,7 +37,7 @@ def dismiss(
 @router.post("/undismiss", status_code=status.HTTP_204_NO_CONTENT)
 def undismiss(
     payload: WarningKeyRequest,
-    tree: FamilyTree = Depends(get_owned_tree),
+    tree: FamilyTree = Depends(get_editable_tree),
     db: Session = Depends(get_db),
 ) -> None:
     existing = db.get(DismissedWarning, {"tree_id": tree.id, "warning_key": payload.key})

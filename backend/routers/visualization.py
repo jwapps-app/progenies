@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from auth.deps import get_owned_tree
+from auth.deps import get_accessible_tree
 from database import get_db
 from models import Child, Family, FamilyTree, Individual
 from schemas import DescendantNode, DescendantUnion, TreeNode
@@ -121,7 +121,7 @@ def _require_individual(db: Session, tree: FamilyTree, individual_id: uuid.UUID)
 @router.get("/descendants/{individual_id}", response_model=DescendantNode)
 def descendants(
     individual_id: uuid.UUID,
-    tree: FamilyTree = Depends(get_owned_tree),
+    tree: FamilyTree = Depends(get_accessible_tree),
     db: Session = Depends(get_db),
 ) -> DescendantNode:
     root = _require_individual(db, tree, individual_id)
@@ -222,7 +222,7 @@ def descendants(
 @router.get("/ancestors/{individual_id}", response_model=TreeNode)
 def ancestors(
     individual_id: uuid.UUID,
-    tree: FamilyTree = Depends(get_owned_tree),
+    tree: FamilyTree = Depends(get_accessible_tree),
     db: Session = Depends(get_db),
 ) -> TreeNode:
     root = _require_individual(db, tree, individual_id)

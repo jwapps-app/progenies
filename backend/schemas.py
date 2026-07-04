@@ -66,6 +66,31 @@ class TreeOut(BaseModel):
     description: str | None
     created_at: datetime
     updated_at: datetime
+    # The requesting user's access to this tree, and (for shared trees) who owns
+    # it. Owned trees report role="owner" with owner_username = the requester.
+    role: str = "owner"
+    owner_username: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Collaboration / sharing
+# ---------------------------------------------------------------------------
+class ShareCreate(BaseModel):
+    user_id: uuid.UUID
+    role: str = Field(default="editor", pattern="^(viewer|editor)$")
+
+
+class ShareOut(BaseModel):
+    user_id: uuid.UUID
+    username: str
+    role: str
+
+
+class UserDirectoryOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    username: str
 
 
 # ---------------------------------------------------------------------------

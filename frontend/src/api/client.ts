@@ -131,12 +131,27 @@ export const api = {
 
   // Trees
   listTrees: () => request<import("../types").Tree[]>("/api/trees"),
+  getTree: (treeId: string) => request<import("../types").Tree>(`/api/trees/${treeId}`),
   createTree: (name: string, description?: string) =>
     request<import("../types").Tree>("/api/trees", {
       method: "POST",
       ...jsonBody({ name, description: description ?? null }),
     }),
+  updateTree: (treeId: string, body: { name?: string; description?: string | null }) =>
+    request<import("../types").Tree>(`/api/trees/${treeId}`, { method: "PUT", ...jsonBody(body) }),
   deleteTree: (treeId: string) => request<void>(`/api/trees/${treeId}`, { method: "DELETE" }),
+
+  // Sharing / collaboration (owner-only management)
+  userDirectory: () => request<import("../types").DirectoryUser[]>("/api/users/directory"),
+  listShares: (treeId: string) =>
+    request<import("../types").Share[]>(`/api/trees/${treeId}/shares`),
+  upsertShare: (treeId: string, userId: string, role: string) =>
+    request<import("../types").Share>(`/api/trees/${treeId}/shares`, {
+      method: "PUT",
+      ...jsonBody({ user_id: userId, role }),
+    }),
+  revokeShare: (treeId: string, userId: string) =>
+    request<void>(`/api/trees/${treeId}/shares/${userId}`, { method: "DELETE" }),
 
   // Individuals
   listIndividuals: (treeId: string) =>

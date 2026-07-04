@@ -10,13 +10,24 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from auth.deps import get_admin_user
+from auth.deps import get_admin_user, get_current_user
 from auth.security import hash_password
 from database import get_db
 from models import User
-from schemas import PasswordReset, UserCreate, UserOut
+from schemas import PasswordReset, UserCreate, UserDirectoryOut, UserOut
 
 router = APIRouter(prefix="/api/users", tags=["users"])
+
+
+@router.get("/directory", response_model=list[UserDirectoryOut])
+def user_directory(
+    user: User = Depends(get_current_user), db: Session = Depends(get_db)
+) -> list[User]:
+    """Every other account's id + username, for the tree-sharing picker. Any
+    authenticated user may read this (it exposes no admin flags or timestamps)."""
+    return list(
+        db.scalars(select(User).where(User.id != user.id).order_by(User.username))
+    )
 
 
 def _require_user(db: Session, user_id: uuid.UUID) -> User:

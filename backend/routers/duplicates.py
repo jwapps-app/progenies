@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from auth.deps import get_owned_tree
+from auth.deps import get_accessible_tree, get_editable_tree
 from database import get_db
 from models import DismissedDuplicate, FamilyTree, Individual
 from schemas import DismissedPairOut, DuplicatePairRequest
@@ -28,7 +28,7 @@ def _require_member(db: Session, tree: FamilyTree, iid: uuid.UUID) -> None:
 
 @router.get("/dismissed", response_model=list[DismissedPairOut])
 def list_dismissed(
-    tree: FamilyTree = Depends(get_owned_tree), db: Session = Depends(get_db)
+    tree: FamilyTree = Depends(get_accessible_tree), db: Session = Depends(get_db)
 ) -> list[DismissedDuplicate]:
     return list(
         db.scalars(select(DismissedDuplicate).where(DismissedDuplicate.tree_id == tree.id))
@@ -38,7 +38,7 @@ def list_dismissed(
 @router.post("/dismiss", status_code=status.HTTP_204_NO_CONTENT)
 def dismiss(
     payload: DuplicatePairRequest,
-    tree: FamilyTree = Depends(get_owned_tree),
+    tree: FamilyTree = Depends(get_editable_tree),
     db: Session = Depends(get_db),
 ) -> None:
     if payload.id_a == payload.id_b:
@@ -57,7 +57,7 @@ def dismiss(
 @router.post("/undismiss", status_code=status.HTTP_204_NO_CONTENT)
 def undismiss(
     payload: DuplicatePairRequest,
-    tree: FamilyTree = Depends(get_owned_tree),
+    tree: FamilyTree = Depends(get_editable_tree),
     db: Session = Depends(get_db),
 ) -> None:
     a, b = _sorted_pair(payload.id_a, payload.id_b)

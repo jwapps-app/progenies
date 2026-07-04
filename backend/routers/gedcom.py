@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
-from auth.deps import get_owned_tree
+from auth.deps import get_accessible_tree, get_editable_tree
 from database import get_db
 from models import FamilyTree
 from schemas import ImportSummary
@@ -16,7 +16,7 @@ router = APIRouter(prefix="/api/trees/{tree_id}", tags=["gedcom"])
 @router.post("/import", response_model=ImportSummary)
 async def import_tree(
     file: UploadFile = File(...),
-    tree: FamilyTree = Depends(get_owned_tree),
+    tree: FamilyTree = Depends(get_editable_tree),
     db: Session = Depends(get_db),
 ) -> ImportSummary:
     raw = await file.read()
@@ -34,7 +34,7 @@ async def import_tree(
 
 @router.get("/export")
 def export_tree(
-    tree: FamilyTree = Depends(get_owned_tree), db: Session = Depends(get_db)
+    tree: FamilyTree = Depends(get_accessible_tree), db: Session = Depends(get_db)
 ) -> Response:
     text = export_gedcom(db, tree)
     safe_name = "".join(c for c in tree.name if c.isalnum() or c in (" ", "_", "-")).strip() or "tree"

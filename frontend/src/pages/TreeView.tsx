@@ -75,6 +75,11 @@ export default function TreeViewPage() {
   const [viewMode, setViewMode] = useState<"descendants" | "ancestors">("descendants");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // This user's access to the tree: "owner" | "editor" | "viewer". A "viewer"
+  // (read-only collaborator) sees the tree but every editing control is hidden.
+  const [treeRole, setTreeRole] = useState<string>("owner");
+  const [ownerUsername, setOwnerUsername] = useState<string | null>(null);
+  const canEdit = treeRole !== "viewer";
   const [importing, setImporting] = useState(false);
   const [summary, setSummary] = useState<ImportSummary | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
@@ -193,12 +198,15 @@ export default function TreeViewPage() {
     if (!treeId) return;
     setLoading(true);
     try {
-      const [inds, fams] = await Promise.all([
+      const [inds, fams, tree] = await Promise.all([
         api.listIndividuals(treeId),
         api.listFamilies(treeId),
+        api.getTree(treeId),
       ]);
       setIndividuals(inds);
       setFamilies(fams);
+      setTreeRole(tree.role);
+      setOwnerUsername(tree.owner_username);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load tree data");
     } finally {
@@ -1208,7 +1216,7 @@ export default function TreeViewPage() {
         )}
 
         <div className="ml-auto flex items-center gap-2">
-          {(duplicates.length > 0 || dismissedDuplicates.length > 0) && (
+          {canEdit && (duplicates.length > 0 || dismissedDuplicates.length > 0) && (
             <button
               onClick={() => setModal("duplicates")}
               title={
@@ -1225,7 +1233,7 @@ export default function TreeViewPage() {
               ⧉ {duplicates.length > 0 ? duplicates.length : ""}
             </button>
           )}
-          {(warnings.length > 0 || dismissedWarnings.length > 0) && (
+          {canEdit && (warnings.length > 0 || dismissedWarnings.length > 0) && (
             <button
               onClick={() => setModal("warnings")}
               title={
@@ -1242,35 +1250,53 @@ export default function TreeViewPage() {
               ⚠ {warnings.length > 0 ? warnings.length : ""}
             </button>
           )}
+          {!canEdit && (
+            <span
+              title={
+                ownerUsername
+                  ? `Read-only — shared with you by ${ownerUsername}`
+                  : "Read-only access"
+              }
+              className="rounded-lg border border-gray-200 bg-gray-50 px-2.5 py-1.5 text-sm font-medium text-gray-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400"
+            >
+              👁 Read-only
+            </span>
+          )}
           <ThemeToggle />
-          <button
-            onClick={handleUndo}
-            disabled={undoStack.length === 0 || busy}
-            title={
-              undoStack.length > 0
-                ? `Undo: ${undoStack[undoStack.length - 1].label}`
-                : "Nothing to undo"
-            }
-            className="rounded-lg border border-gray-300 dark:border-slate-600 px-3 py-1.5 text-sm font-medium text-gray-700 dark:text-slate-200 hover:bg-gray-100 dark:hover:bg-slate-700 disabled:opacity-40"
-          >
-            ↶ Undo
-          </button>
-          <button
-            onClick={() => setModal("add")}
-            className="rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-light"
-          >
-            + Add person
-          </button>
-          <label className="cursor-pointer rounded-lg border border-gray-300 dark:border-slate-600 px-3 py-1.5 text-sm font-medium text-gray-700 dark:text-slate-200 hover:bg-gray-100 dark:hover:bg-slate-700">
-            {importing ? "Importing…" : "Import GEDCOM"}
-            <input
-              type="file"
-              accept=".ged,.gedcom,text/plain"
-              onChange={handleImport}
-              disabled={importing}
-              className="hidden"
-            />
-          </label>
+          {canEdit && (
+            <button
+              onClick={handleUndo}
+              disabled={undoStack.length === 0 || busy}
+              title={
+                undoStack.length > 0
+                  ? `Undo: ${undoStack[undoStack.length - 1].label}`
+                  : "Nothing to undo"
+              }
+              className="rounded-lg border border-gray-300 dark:border-slate-600 px-3 py-1.5 text-sm font-medium text-gray-700 dark:text-slate-200 hover:bg-gray-100 dark:hover:bg-slate-700 disabled:opacity-40"
+            >
+              ↶ Undo
+            </button>
+          )}
+          {canEdit && (
+            <button
+              onClick={() => setModal("add")}
+              className="rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-light"
+            >
+              + Add person
+            </button>
+          )}
+          {canEdit && (
+            <label className="cursor-pointer rounded-lg border border-gray-300 dark:border-slate-600 px-3 py-1.5 text-sm font-medium text-gray-700 dark:text-slate-200 hover:bg-gray-100 dark:hover:bg-slate-700">
+              {importing ? "Importing…" : "Import GEDCOM"}
+              <input
+                type="file"
+                accept=".ged,.gedcom,text/plain"
+                onChange={handleImport}
+                disabled={importing}
+                className="hidden"
+              />
+            </label>
+          )}
           {individuals.length > 0 && (
             <button
               onClick={handleExportImage}
@@ -1324,17 +1350,28 @@ export default function TreeViewPage() {
         ) : individuals.length === 0 ? (
           <Centered>
             <div className="max-w-sm text-center">
-              <h2 className="mb-2 text-lg font-semibold text-gray-700 dark:text-slate-200">Start your family tree</h2>
-              <p className="mb-5 text-sm text-gray-500 dark:text-slate-400">
-                Add the first person to begin, then add their spouses and children. Already have a
-                GEDCOM file? Import it instead.
-              </p>
-              <button
-                onClick={() => setModal("add")}
-                className="rounded-lg bg-brand px-5 py-2.5 font-medium text-white hover:bg-brand-light"
-              >
-                + Add the first person
-              </button>
+              <h2 className="mb-2 text-lg font-semibold text-gray-700 dark:text-slate-200">
+                {canEdit ? "Start your family tree" : "This tree is empty"}
+              </h2>
+              {canEdit ? (
+                <>
+                  <p className="mb-5 text-sm text-gray-500 dark:text-slate-400">
+                    Add the first person to begin, then add their spouses and children. Already have a
+                    GEDCOM file? Import it instead.
+                  </p>
+                  <button
+                    onClick={() => setModal("add")}
+                    className="rounded-lg bg-brand px-5 py-2.5 font-medium text-white hover:bg-brand-light"
+                  >
+                    + Add the first person
+                  </button>
+                </>
+              ) : (
+                <p className="text-sm text-gray-500 dark:text-slate-400">
+                  Nobody has been added yet. You have read-only access
+                  {ownerUsername ? `, shared with you by ${ownerUsername}` : ""}.
+                </p>
+              )}
             </div>
           </Centered>
         ) : viewMode === "ancestors" ? (
@@ -1456,14 +1493,16 @@ export default function TreeViewPage() {
                               )}
                             </div>
                             <span className="flex shrink-0 items-center">
-                              <button
-                                onClick={() => openEditFamily(family)}
-                                className="px-1 text-gray-400 hover:text-brand disabled:opacity-30 dark:text-slate-500 dark:hover:text-brand-soft"
-                                title="Edit this marriage"
-                              >
-                                ✎
-                              </button>
-                              {arr.length > 1 && (
+                              {canEdit && (
+                                <button
+                                  onClick={() => openEditFamily(family)}
+                                  className="px-1 text-gray-400 hover:text-brand disabled:opacity-30 dark:text-slate-500 dark:hover:text-brand-soft"
+                                  title="Edit this marriage"
+                                >
+                                  ✎
+                                </button>
+                              )}
+                              {canEdit && arr.length > 1 && (
                                 <>
                                   <button
                                     onClick={() => moveMarriage(selected.id, family.id, -1)}
@@ -1497,27 +1536,33 @@ export default function TreeViewPage() {
             })()}
 
             <div className="grid grid-cols-2 gap-2 text-sm">
-              <PanelButton onClick={() => setModal("addParent")}>▲ Add parent</PanelButton>
-              <PanelButton onClick={openAddSpouse}>Add spouse</PanelButton>
-              <PanelButton onClick={openAddChild}>Add child</PanelButton>
-              <PanelButton
-                onClick={() => setModal("addDescendant")}
-                title="Add a known descendant when the generations between are unknown"
-              >
-                Add descendant
-              </PanelButton>
-              <PanelButton onClick={() => setModal("edit")}>Edit</PanelButton>
+              {canEdit && (
+                <>
+                  <PanelButton onClick={() => setModal("addParent")}>▲ Add parent</PanelButton>
+                  <PanelButton onClick={openAddSpouse}>Add spouse</PanelButton>
+                  <PanelButton onClick={openAddChild}>Add child</PanelButton>
+                  <PanelButton
+                    onClick={() => setModal("addDescendant")}
+                    title="Add a known descendant when the generations between are unknown"
+                  >
+                    Add descendant
+                  </PanelButton>
+                  <PanelButton onClick={() => setModal("edit")}>Edit</PanelButton>
+                </>
+              )}
               <PanelButton onClick={openRelate}>Relationship…</PanelButton>
               <PanelButton onClick={showWholeTree} className="col-span-2">
                 ⌂ Whole tree
               </PanelButton>
-              <button
-                onClick={handleDeletePerson}
-                disabled={busy}
-                className="col-span-2 rounded-lg border border-red-200 px-3 py-1.5 font-medium text-red-600 hover:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950/40"
-              >
-                Delete
-              </button>
+              {canEdit && (
+                <button
+                  onClick={handleDeletePerson}
+                  disabled={busy}
+                  className="col-span-2 rounded-lg border border-red-200 px-3 py-1.5 font-medium text-red-600 hover:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950/40"
+                >
+                  Delete
+                </button>
+              )}
             </div>
           </aside>
         )}

@@ -11,6 +11,24 @@ export interface Tree {
   description: string | null;
   created_at: string;
   updated_at: string;
+  /** This user's access to the tree: "owner" | "editor" | "viewer". */
+  role: string;
+  /** For trees shared with this user, the owner's username; null when owned. */
+  owner_username: string | null;
+}
+
+/** A collaborator grant on a tree. */
+export interface Share {
+  user_id: string;
+  username: string;
+  /** "viewer" (read-only) | "editor" (read + write) */
+  role: string;
+}
+
+/** A pickable account for the sharing dialog (id + username only). */
+export interface DirectoryUser {
+  id: string;
+  username: string;
 }
 
 export interface Individual {
