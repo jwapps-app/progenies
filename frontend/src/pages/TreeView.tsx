@@ -1021,6 +1021,7 @@ export default function TreeViewPage() {
           displayName(p),
           p.surname,
           p.married_name,
+          p.nickname,
           p.birth_date,
           p.birth_place,
           p.death_date,
@@ -1400,6 +1401,7 @@ export default function TreeViewPage() {
               {selected.married_name && selected.surname && selected.married_name !== selected.surname && (
                 <Detail label="née" value={selected.surname} />
               )}
+              <Detail label="Nickname" value={selected.nickname} />
               <Detail label="Sex" value={sexLabel(selected.sex)} />
               <Detail label="Born" value={joinDatePlace(selected.birth_date, selected.birth_place)} />
               <Detail label="Died" value={joinDatePlace(selected.death_date, selected.death_place)} />

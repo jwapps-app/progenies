@@ -76,6 +76,7 @@ class IndividualBase(BaseModel):
     middle_name: str | None = None
     surname: str | None = None
     married_name: str | None = None
+    nickname: str | None = None
     sex: str | None = Field(default=None, pattern="^[MFU]$")
     birth_date: str | None = None
     birth_place: str | None = None
@@ -196,6 +197,7 @@ class TreeNode(BaseModel):
     middle_name: str | None
     surname: str | None
     married_name: str | None = None
+    nickname: str | None = None
     sex: str | None
     birth_date: str | None
     death_date: str | None
@@ -220,6 +222,7 @@ class DescendantNode(BaseModel):
     middle_name: str | None
     surname: str | None
     married_name: str | None = None
+    nickname: str | None = None
     sex: str | None
     birth_date: str | None
     death_date: str | None

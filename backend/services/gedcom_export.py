@@ -101,6 +101,8 @@ def export_gedcom(db: Session, tree: FamilyTree, archive: bool = True) -> str:
         given_part = " ".join(p for p in [indi.given_name, indi.middle_name] if p).strip()
         name = f"{given_part} /{indi.surname}/".strip() if indi.surname else given_part
         lines.append(_line(1, "NAME", name or None))
+        if indi.nickname:
+            lines.append(_line(2, "NICK", indi.nickname))
         # Married name: a second NAME record tagged TYPE married (GEDCOM 5.5.1),
         # with the acquired surname in slashes so other software round-trips it.
         if indi.married_name:

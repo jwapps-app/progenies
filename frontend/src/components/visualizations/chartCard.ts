@@ -12,6 +12,7 @@ export interface CardPerson {
   middle_name: string | null;
   surname: string | null;
   married_name?: string | null;
+  nickname?: string | null;
   sex: string | null;
   birth_date: string | null;
   death_date: string | null;
@@ -65,7 +66,8 @@ function truncate(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;
 }
 
-/** Compact chart label: given name + middle initial(s) + surname (e.g. "Robert J. Anderson"). */
+/** Compact chart label: given name + nickname + middle initial(s) + surname
+ * (e.g. 'Robert "Bob" J. Anderson'). */
 export function nodeLabel(p: CardPerson): string {
   const initials = p.middle_name
     ? p.middle_name
@@ -74,9 +76,13 @@ export function nodeLabel(p: CardPerson): string {
         .map((m) => `${m[0].toUpperCase()}.`)
         .join(" ")
     : "";
+  const nick = p.nickname?.trim();
   // Display the married surname when set, otherwise the birth surname.
   const surname = p.married_name || p.surname;
-  const label = [p.given_name, initials, surname].filter(Boolean).join(" ").trim();
+  const label = [p.given_name, nick ? `"${nick}"` : "", initials, surname]
+    .filter(Boolean)
+    .join(" ")
+    .trim();
   return label || "Unknown";
 }
 

@@ -7,6 +7,7 @@ export interface PersonFields {
   middle_name: string;
   surname: string;
   married_name: string;
+  nickname: string;
   sex: "M" | "F" | "U";
   birth_date: string;
   birth_place: string;
@@ -30,6 +31,7 @@ function toFields(initial?: Partial<Individual>): PersonFields {
     middle_name: initial?.middle_name ?? "",
     surname: initial?.surname ?? "",
     married_name: initial?.married_name ?? "",
+    nickname: initial?.nickname ?? "",
     sex: (initial?.sex as "M" | "F" | "U") ?? "U",
     birth_date: initial?.birth_date ?? "",
     birth_place: initial?.birth_place ?? "",
@@ -149,18 +151,31 @@ export default function PersonForm({ initial, submitLabel, busy, onSubmit }: Pro
         </label>
       </div>
 
-      <label className="block">
-        <span className="mb-1 block text-xs font-medium text-gray-600 dark:text-slate-300">Sex</span>
-        <select
-          value={fields.sex}
-          onChange={(e) => update("sex", e.target.value as PersonFields["sex"])}
-          className={inputClass}
-        >
-          <option value="U">Unknown</option>
-          <option value="M">Male</option>
-          <option value="F">Female</option>
-        </select>
-      </label>
+      <div className="grid grid-cols-2 gap-3">
+        <label className="block">
+          <span className="mb-1 block text-xs font-medium text-gray-600 dark:text-slate-300">
+            Nickname <span className="text-gray-400">(optional)</span>
+          </span>
+          <input
+            value={fields.nickname}
+            onChange={(e) => update("nickname", e.target.value)}
+            placeholder='e.g. Bob'
+            className={inputClass}
+          />
+        </label>
+        <label className="block">
+          <span className="mb-1 block text-xs font-medium text-gray-600 dark:text-slate-300">Sex</span>
+          <select
+            value={fields.sex}
+            onChange={(e) => update("sex", e.target.value as PersonFields["sex"])}
+            className={inputClass}
+          >
+            <option value="U">Unknown</option>
+            <option value="M">Male</option>
+            <option value="F">Female</option>
+          </select>
+        </label>
+      </div>
 
       <div className="grid grid-cols-2 gap-3">
         <label className="block">
@@ -243,6 +258,7 @@ export function fieldsToPayload(fields: PersonFields): Partial<Individual> {
     middle_name: blankToNull(fields.middle_name),
     surname: blankToNull(fields.surname),
     married_name: blankToNull(fields.married_name),
+    nickname: blankToNull(fields.nickname),
     sex: fields.sex,
     birth_date: blankToNull(fields.birth_date),
     birth_place: blankToNull(fields.birth_place),

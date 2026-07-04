@@ -20,6 +20,8 @@ export interface Individual {
   middle_name: string | null;
   surname: string | null;
   married_name: string | null;
+  /** Familiar name, shown in quotes (e.g. Robert "Bob" Smith). */
+  nickname: string | null;
   sex: string | null;
   birth_date: string | null;
   birth_place: string | null;
@@ -75,6 +77,7 @@ export interface TreeNode {
   middle_name: string | null;
   surname: string | null;
   married_name?: string | null;
+  nickname?: string | null;
   sex: string | null;
   birth_date: string | null;
   death_date: string | null;
@@ -119,6 +122,7 @@ type NamedPerson = {
   middle_name?: string | null;
   surname: string | null;
   married_name?: string | null;
+  nickname?: string | null;
 };
 
 /** The surname to display: the married name when set, otherwise the birth surname. */
@@ -128,7 +132,13 @@ export function displaySurname(person: NamedPerson): string | null {
 
 export function displayName(person: NamedPerson | null | undefined): string {
   if (!person) return "Unknown";
-  const name = [person.given_name, person.middle_name, displaySurname(person)]
+  const nick = person.nickname?.trim();
+  const name = [
+    person.given_name,
+    nick ? `"${nick}"` : null,
+    person.middle_name,
+    displaySurname(person),
+  ]
     .filter(Boolean)
     .join(" ")
     .trim();

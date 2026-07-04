@@ -84,6 +84,8 @@ class Individual(Base):
     # Surname acquired through marriage, when different from the birth surname.
     # Shown as the display surname while `surname` is preserved as "née …".
     married_name: Mapped[str | None] = mapped_column(Text)
+    # Familiar name, shown in quotes (e.g. Robert "Bob" Smith).
+    nickname: Mapped[str | None] = mapped_column(Text)
     sex: Mapped[str | None] = mapped_column(String(1))  # M, F, U (unknown)
     birth_date: Mapped[str | None] = mapped_column(Text)
     birth_place: Mapped[str | None] = mapped_column(Text)
