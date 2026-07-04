@@ -44,6 +44,9 @@ function toFields(initial?: Partial<Individual>): PersonFields {
   };
 }
 
+// Shared by text inputs, the date inputs, the Sex <select>, and the notes
+// textarea. iOS-specific normalization for the date input lives in index.css so
+// it doesn't strip the <select>'s native dropdown arrow.
 const inputClass =
   "w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100 dark:placeholder-slate-400";
 
@@ -71,7 +74,7 @@ function DateField({
     <button
       type="button"
       onClick={() => setMode(m)}
-      className={`rounded px-2 py-0.5 text-[11px] font-medium transition ${
+      className={`flex h-5 appearance-none items-center rounded px-2 text-[11px] font-medium leading-none transition ${
         mode === m
           ? "bg-brand text-white"
           : "bg-gray-100 text-gray-500 hover:bg-gray-200 dark:bg-slate-600 dark:text-slate-300 dark:hover:bg-slate-500"

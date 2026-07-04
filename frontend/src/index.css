@@ -55,3 +55,26 @@ body {
   background-color: var(--app-bg);
   color: var(--app-fg);
 }
+
+/* iOS Safari renders <input type="date"> with native chrome that sizes and
+   aligns differently from a text input, which skews the two-column edit form on
+   iPad (but not on desktop). With appearance stripped (see PersonForm's
+   inputClass), left-align and de-pad the value so a date field matches the text
+   field beside it in height and baseline. */
+input[type="date"] {
+  /* Strip iOS Safari's native date chrome and force the exact height of a text
+     input (px-3 py-2 text-sm, border-box) so the date field and the place field
+     beside it match on every browser — desktop leaves the date box ~2px taller,
+     iOS much more. Scoped here (not on the shared input class) so the Sex
+     <select> keeps its native dropdown arrow. */
+  -webkit-appearance: none;
+  appearance: none;
+  height: 2.375rem;
+}
+input[type="date"]::-webkit-date-and-time-value {
+  text-align: left;
+  margin: 0;
+}
+input[type="date"]::-webkit-datetime-edit {
+  padding: 0;
+}
