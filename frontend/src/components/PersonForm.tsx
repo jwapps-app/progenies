@@ -1,6 +1,7 @@
 import { FormEvent, useState } from "react";
 import type { Individual } from "../types";
 import { fileToThumbnail } from "../utils/photo";
+import { gedcomToIso, isoToGedcom } from "../utils/gedcomDate";
 
 export interface PersonFields {
   given_name: string;
@@ -45,6 +46,68 @@ function toFields(initial?: Partial<Individual>): PersonFields {
 
 const inputClass =
   "w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100 dark:placeholder-slate-400";
+
+/** A birth/death date field with two modes: a real calendar picker for exact,
+ * known dates, and free text for estimates ("ABT 1850", "BEF 1900", a bare year,
+ * or a biblical age). Exact dates are stored in GEDCOM day-month-year form so
+ * they round-trip and display consistently with everything else. */
+function DateField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  // Start in "exact" mode for a new/empty field or a value the calendar can
+  // represent; drop to "estimate" for anything free-text that it can't.
+  const [mode, setMode] = useState<"exact" | "estimate">(
+    value.trim() === "" || gedcomToIso(value) ? "exact" : "estimate"
+  );
+  const iso = gedcomToIso(value);
+
+  const tab = (m: "exact" | "estimate", text: string) => (
+    <button
+      type="button"
+      onClick={() => setMode(m)}
+      className={`rounded px-2 py-0.5 text-[11px] font-medium transition ${
+        mode === m
+          ? "bg-brand text-white"
+          : "bg-gray-100 text-gray-500 hover:bg-gray-200 dark:bg-slate-600 dark:text-slate-300 dark:hover:bg-slate-500"
+      }`}
+    >
+      {text}
+    </button>
+  );
+
+  return (
+    <div className="block">
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <span className="text-xs font-medium text-gray-600 dark:text-slate-300">{label}</span>
+        <span className="flex gap-1">
+          {tab("exact", "Exact")}
+          {tab("estimate", "Estimate")}
+        </span>
+      </div>
+      {mode === "exact" ? (
+        <input
+          type="date"
+          value={iso}
+          onChange={(e) => onChange(isoToGedcom(e.target.value))}
+          className={inputClass}
+        />
+      ) : (
+        <input
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder="e.g. ABT 1850, BEF 1900, or 930"
+          className={inputClass}
+        />
+      )}
+    </div>
+  );
+}
 
 /** Form for creating or editing an individual. GEDCOM-style free-text dates are allowed. */
 export default function PersonForm({ initial, submitLabel, busy, onSubmit }: Props) {
@@ -178,15 +241,11 @@ export default function PersonForm({ initial, submitLabel, busy, onSubmit }: Pro
       </div>
 
       <div className="grid grid-cols-2 gap-3">
-        <label className="block">
-          <span className="mb-1 block text-xs font-medium text-gray-600 dark:text-slate-300">Birth date</span>
-          <input
-            value={fields.birth_date}
-            onChange={(e) => update("birth_date", e.target.value)}
-            placeholder="e.g. 12 MAR 1880 or ABT 1850"
-            className={inputClass}
-          />
-        </label>
+        <DateField
+          label="Birth date"
+          value={fields.birth_date}
+          onChange={(v) => update("birth_date", v)}
+        />
         <label className="block">
           <span className="mb-1 block text-xs font-medium text-gray-600 dark:text-slate-300">Birth place</span>
           <input
@@ -198,15 +257,11 @@ export default function PersonForm({ initial, submitLabel, busy, onSubmit }: Pro
       </div>
 
       <div className="grid grid-cols-2 gap-3">
-        <label className="block">
-          <span className="mb-1 block text-xs font-medium text-gray-600 dark:text-slate-300">Death date</span>
-          <input
-            value={fields.death_date}
-            onChange={(e) => update("death_date", e.target.value)}
-            placeholder="e.g. 1945 or BEF 1900"
-            className={inputClass}
-          />
-        </label>
+        <DateField
+          label="Death date"
+          value={fields.death_date}
+          onChange={(v) => update("death_date", v)}
+        />
         <label className="block">
           <span className="mb-1 block text-xs font-medium text-gray-600 dark:text-slate-300">Death place</span>
           <input
