@@ -48,15 +48,32 @@ async function rawRequest(path: string, options: RequestInit): Promise<Response>
   return fetch(`${BASE_URL}${path}`, { ...options, headers, credentials: "include" });
 }
 
-async function doRefresh(): Promise<{ access_token: string; username: string } | null> {
-  const res = await fetch(`${BASE_URL}/auth/refresh`, {
-    method: "POST",
-    credentials: "include",
-  });
-  if (!res.ok) return null;
-  const data = await res.json();
-  accessToken = data.access_token;
-  return data;
+// Single-flight: concurrent 401s (e.g. three parallel fetches after token
+// expiry) share ONE refresh call instead of racing the endpoint — with token
+// rotation, the losers of that race would present a stale token and log the
+// user out spuriously.
+let refreshInFlight: Promise<{ access_token: string; username: string } | null> | null = null;
+
+function doRefresh(): Promise<{ access_token: string; username: string } | null> {
+  if (!refreshInFlight) {
+    refreshInFlight = (async () => {
+      try {
+        const res = await fetch(`${BASE_URL}/auth/refresh`, {
+          method: "POST",
+          credentials: "include",
+        });
+        if (!res.ok) return null;
+        const data = await res.json();
+        accessToken = data.access_token;
+        return data;
+      } catch {
+        return null;
+      } finally {
+        refreshInFlight = null;
+      }
+    })();
+  }
+  return refreshInFlight;
 }
 
 async function tryRefresh(): Promise<boolean> {

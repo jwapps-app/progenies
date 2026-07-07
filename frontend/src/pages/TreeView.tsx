@@ -148,6 +148,9 @@ export default function TreeViewPage() {
       await reload();
     } catch (err) {
       setError(err instanceof Error ? `Undo failed: ${err.message}` : "Undo failed");
+      // Drop the failed entry (e.g. it referenced a person recreated under a
+      // new id) so undo doesn't wedge on it forever.
+      setUndoStack((s) => s.slice(0, -1));
     } finally {
       setBusy(false);
     }
@@ -168,7 +171,9 @@ export default function TreeViewPage() {
     const svg = document.querySelector("main svg") as SVGSVGElement | null;
     if (!svg) return;
     const bg = theme === "dark" ? "#0b1220" : "#ffffff";
-    exportChartPng(svg, `family-tree-${viewMode}.png`, bg);
+    exportChartPng(svg, `family-tree-${viewMode}.png`, bg).catch((err) =>
+      setError(err instanceof Error ? err.message : "Image export failed")
+    );
   }
 
   // Download the GEDCOM through the API client (which attaches the Bearer
@@ -1028,9 +1033,11 @@ export default function TreeViewPage() {
 
   async function handleDismissWarning(key: string) {
     if (!treeId) return;
-    setDismissedWarningKeys((s) => new Set(s).add(key));
     try {
+      // Pessimistic: update local state only once the server agrees, so a
+      // failed call can't leave the warning hidden locally but alive remotely.
       await api.dismissWarning(treeId, key);
+      setDismissedWarningKeys((s) => new Set(s).add(key));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to dismiss");
     }
@@ -1038,13 +1045,13 @@ export default function TreeViewPage() {
 
   async function handleRestoreWarning(key: string) {
     if (!treeId) return;
-    setDismissedWarningKeys((s) => {
-      const next = new Set(s);
-      next.delete(key);
-      return next;
-    });
     try {
       await api.undismissWarning(treeId, key);
+      setDismissedWarningKeys((s) => {
+        const next = new Set(s);
+        next.delete(key);
+        return next;
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to restore");
     }
@@ -1079,9 +1086,9 @@ export default function TreeViewPage() {
 
   async function handleDismissDuplicate(idA: string, idB: string) {
     if (!treeId) return;
-    setDismissedPairs((s) => new Set(s).add(pairKey(idA, idB)));
     try {
       await api.dismissDuplicate(treeId, idA, idB);
+      setDismissedPairs((s) => new Set(s).add(pairKey(idA, idB)));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to dismiss");
     }
@@ -1089,13 +1096,13 @@ export default function TreeViewPage() {
 
   async function handleRestoreDuplicate(idA: string, idB: string) {
     if (!treeId) return;
-    setDismissedPairs((s) => {
-      const next = new Set(s);
-      next.delete(pairKey(idA, idB));
-      return next;
-    });
     try {
       await api.undismissDuplicate(treeId, idA, idB);
+      setDismissedPairs((s) => {
+        const next = new Set(s);
+        next.delete(pairKey(idA, idB));
+        return next;
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to restore");
     }
@@ -1146,6 +1153,9 @@ export default function TreeViewPage() {
     if (!fam) return;
     setSelectedId(aId);
     setChildFamilyChoice(fam.id);
+    // Reset the relation — without this, the chart's "+" inherited whatever
+    // the LAST added child was (e.g. adopted) and silently applied it.
+    setChildRelation("biological");
     setModal("addChild");
   }
 
@@ -1406,12 +1416,21 @@ export default function TreeViewPage() {
         </p>
       )}
       {summary && (
-        <div className="bg-green-50 px-4 py-2 text-sm text-green-800 dark:bg-green-950/50 dark:text-green-300">
-          Imported {summary.individuals_imported} individuals, {summary.families_imported} families,{" "}
-          {summary.children_links} parent-child links
-          {summary.unknown_spouses_created > 0 &&
-            `, created ${summary.unknown_spouses_created} unknown spouse placeholder(s)`}
-          .{summary.warnings.length > 0 && ` ${summary.warnings.length} warning(s).`}
+        <div className="flex items-start justify-between gap-3 bg-green-50 px-4 py-2 text-sm text-green-800 dark:bg-green-950/50 dark:text-green-300">
+          <span>
+            Imported {summary.individuals_imported} individuals, {summary.families_imported} families,{" "}
+            {summary.children_links} parent-child links
+            {summary.unknown_spouses_created > 0 &&
+              `, created ${summary.unknown_spouses_created} unknown spouse placeholder(s)`}
+            .{summary.warnings.length > 0 && ` ${summary.warnings.length} warning(s).`}
+          </span>
+          <button
+            onClick={() => setSummary(null)}
+            className="shrink-0 font-medium hover:underline"
+            aria-label="Dismiss import summary"
+          >
+            ✕
+          </button>
         </div>
       )}
       {highlightIds && (
@@ -1511,7 +1530,7 @@ export default function TreeViewPage() {
               </div>
               <button
                 onClick={() => setSelectedId(null)}
-                className="text-gray-400 dark:text-slate-500 hover:text-gray-600 dark:text-slate-300"
+                className="text-gray-400 hover:text-gray-600 dark:text-slate-500 dark:hover:text-slate-300"
                 aria-label="Close"
               >
                 ✕

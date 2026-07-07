@@ -67,8 +67,13 @@ export default function TreesPage() {
 
   async function handleDelete(tree: Tree) {
     if (!confirm(`Delete "${tree.name}"? This cannot be undone.`)) return;
-    await api.deleteTree(tree.id);
-    setTrees((t) => t.filter((x) => x.id !== tree.id));
+    setError(null);
+    try {
+      await api.deleteTree(tree.id);
+      setTrees((t) => t.filter((x) => x.id !== tree.id));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete tree");
+    }
   }
 
   return (
