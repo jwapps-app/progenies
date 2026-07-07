@@ -1,5 +1,6 @@
 """Genealogy PWA — FastAPI application entrypoint."""
 import time
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,18 +21,6 @@ from routers.warnings import router as warnings_router
 
 # Ensure all models are imported so create_all sees them.
 import models  # noqa: F401, E402
-
-app = FastAPI(title=settings.APP_NAME, version="1.0.0", description="Genealogy & Family Tree PWA")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.cors_origins_list,
-    allow_origin_regex=settings.CORS_ORIGIN_REGEX or None,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 
 # Idempotent additive migrations applied at startup (pre-Alembic). create_all
 # only creates missing tables, so new columns on existing tables are added here.
@@ -61,9 +50,16 @@ _LIGHTWEIGHT_MIGRATIONS = (
 )
 
 
-@app.on_event("startup")
-def on_startup() -> None:
+def _startup() -> None:
     """Wait for the database, create tables, and apply additive migrations."""
+    # Refuse to run with the placeholder signing key: JWTs signed with a
+    # publicly known key mean anyone can mint an admin token. A deploy that
+    # forgets the env var must fail loudly, not silently run insecure.
+    if settings.SECRET_KEY == "change-me-in-production":
+        raise RuntimeError(
+            "SECRET_KEY is not set (still the placeholder). Generate one with "
+            "`openssl rand -hex 32` and set it in the environment."
+        )
     last_error: Exception | None = None
     for _ in range(30):
         try:
@@ -79,6 +75,29 @@ def on_startup() -> None:
             time.sleep(1)
     if last_error is not None:
         raise last_error
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    _startup()
+    yield
+
+
+app = FastAPI(
+    title=settings.APP_NAME,
+    version="1.0.0",
+    description="Genealogy & Family Tree PWA",
+    lifespan=_lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origins_list,
+    allow_origin_regex=settings.CORS_ORIGIN_REGEX or None,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/health", tags=["health"])
