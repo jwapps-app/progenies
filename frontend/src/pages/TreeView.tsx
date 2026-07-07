@@ -212,29 +212,57 @@ export default function TreeViewPage() {
     }
   }
 
-  async function loadData() {
+  // Guards a slow response from a previous tree landing after a URL switch.
+  const treeIdRef = useRef(treeId);
+  treeIdRef.current = treeId;
+
+  async function loadData(initial = false) {
     if (!treeId) return;
-    setLoading(true);
+    const tid = treeId;
+    // Only block the UI (and unmount the chart) on the FIRST load of a tree.
+    // Reloads after edits refresh state in place, so the chart keeps its
+    // pan/zoom instead of flashing "Loading…" and redrawing from scratch.
+    if (initial) setLoading(true);
     try {
-      const [inds, fams, tree] = await Promise.all([
-        api.listIndividuals(treeId),
-        api.listFamilies(treeId),
-        api.getTree(treeId),
+      const [inds, fams] = await Promise.all([
+        api.listIndividuals(tid),
+        api.listFamilies(tid),
       ]);
+      if (treeIdRef.current !== tid) return; // stale response for another tree
       setIndividuals(inds);
       setFamilies(fams);
-      setTreeRole(tree.role);
-      setOwnerUsername(tree.owner_username);
-      setTreeName(tree.name);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load tree data");
+      if (treeIdRef.current === tid)
+        setError(err instanceof Error ? err.message : "Failed to load tree data");
     } finally {
-      setLoading(false);
+      if (initial && treeIdRef.current === tid) setLoading(false);
     }
   }
 
   useEffect(() => {
-    void loadData();
+    // Tree switched: reset per-tree state BEFORE fetching so nothing from the
+    // previous tree (selection, undo entries, banners) leaks into this one.
+    setSelectedId(null);
+    setRootId(null);
+    setUndoStack([]);
+    setError(null);
+    setSummary(null);
+    setIndividuals([]);
+    setFamilies([]);
+    void loadData(true);
+    // Tree metadata (name/role/owner) changes only on switch, not on edits.
+    if (treeId) {
+      const tid = treeId;
+      api
+        .getTree(tid)
+        .then((tree) => {
+          if (treeIdRef.current !== tid) return;
+          setTreeRole(tree.role);
+          setOwnerUsername(tree.owner_username);
+          setTreeName(tree.name);
+        })
+        .catch(() => {});
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [treeId]);
 
@@ -278,13 +306,40 @@ export default function TreeViewPage() {
   async function reload() {
     await loadData();
     setReloadKey((k) => k + 1);
+    // Expanded spouse-ancestry grafts were fetched before the edit — refetch
+    // rather than keep showing pre-edit data (they reload lazily on toggle).
+    setExpandedFamily({});
   }
 
   const personById = useMemo(
     () => new Map(individuals.map((i) => [i.id, i])),
     [individuals]
   );
-  const selected = selectedId ? personById.get(selectedId) ?? null : null;
+  // The individuals LIST omits photo thumbnails (payload size); fetch the
+  // selected person's detail lazily so the panel and edit form get the photo.
+  const [selectedDetail, setSelectedDetail] = useState<Individual | null>(null);
+  useEffect(() => {
+    if (!treeId || !selectedId) {
+      setSelectedDetail(null);
+      return;
+    }
+    let cancelled = false;
+    api
+      .getIndividual(treeId, selectedId)
+      .then((d) => !cancelled && setSelectedDetail(d))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [treeId, selectedId, reloadKey]);
+
+  const selectedBase = selectedId ? personById.get(selectedId) ?? null : null;
+  const selected =
+    selectedBase && selectedDetail && selectedDetail.id === selectedBase.id
+      ? { ...selectedBase, photo_url: selectedDetail.photo_url }
+      : selectedBase;
+  // TRUE once the selected person's photo state is actually known.
+  const selectedPhotoLoaded = !!selected && selectedDetail?.id === selected.id;
 
   // Families in which a given person is a spouse, with the co-parent resolved.
   function spouseFamiliesOf(personId: string) {
@@ -358,17 +413,25 @@ export default function TreeViewPage() {
 
   async function handleEditPerson(fields: PersonFields) {
     if (!treeId || !selectedId) return;
-    const before = personById.get(selectedId);
+    const before = selected; // includes the photo when the detail has loaded
+    const payload = fieldsToPayload(fields);
+    // The list omits photos — if the form was seeded before the detail fetch
+    // finished and the user didn't set one, sending photo_url:null would WIPE
+    // the stored photo. Omit the field instead (the PUT is exclude_unset).
+    if (!fields.photo_url && !selectedPhotoLoaded) delete payload.photo_url;
     setBusy(true);
     setError(null);
     try {
-      await api.updateIndividual(treeId, selectedId, fieldsToPayload(fields));
+      await api.updateIndividual(treeId, selectedId, payload);
       await reload();
       setModal(null);
-      if (before)
+      if (before) {
+        const undoPayload = individualPayload(before);
+        if (!selectedPhotoLoaded) delete undoPayload.photo_url;
         pushUndo(`Edit ${displayName(before)}`, () =>
-          api.updateIndividual(treeId, before.id, individualPayload(before))
+          api.updateIndividual(treeId, before.id, undoPayload)
         );
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save changes");
     } finally {

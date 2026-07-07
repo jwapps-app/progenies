@@ -3,7 +3,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from auth.deps import get_accessible_tree, get_editable_tree
 from database import get_db
@@ -33,8 +33,22 @@ def _validate_member(db: Session, tree: FamilyTree, individual_id: uuid.UUID | N
 
 def _sync_children(db: Session, fam: Family, refs: list[ChildRef], tree: FamilyTree) -> None:
     """Replace the family's child links with the provided set."""
-    for ref in refs:
-        _validate_member(db, tree, ref.individual_id)
+    # Validate every referenced child in ONE query (a per-child db.get was N+1).
+    if refs:
+        wanted = {ref.individual_id for ref in refs}
+        found = set(
+            db.scalars(
+                select(Individual.id).where(
+                    Individual.id.in_(wanted), Individual.tree_id == tree.id
+                )
+            )
+        )
+        missing = wanted - found
+        if missing:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Individual {next(iter(missing))} not found in this tree",
+            )
     # Clear existing links, then add the new set.
     for existing in list(fam.children):
         db.delete(existing)
@@ -54,7 +68,12 @@ def _sync_children(db: Session, fam: Family, refs: list[ChildRef], tree: FamilyT
 def list_families(
     tree: FamilyTree = Depends(get_accessible_tree), db: Session = Depends(get_db)
 ) -> list[Family]:
-    stmt = select(Family).where(Family.tree_id == tree.id)
+    # selectinload avoids one lazy children query PER family during serialization.
+    stmt = (
+        select(Family)
+        .where(Family.tree_id == tree.id)
+        .options(selectinload(Family.children))
+    )
     return list(db.scalars(stmt))
 
 

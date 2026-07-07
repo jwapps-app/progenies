@@ -153,9 +153,12 @@ export const api = {
   revokeShare: (treeId: string, userId: string) =>
     request<void>(`/api/trees/${treeId}/shares/${userId}`, { method: "DELETE" }),
 
-  // Individuals
+  // Individuals. The list omits photo thumbnails (they multiply the payload);
+  // fetch a person's detail for their photo.
   listIndividuals: (treeId: string) =>
     request<import("../types").Individual[]>(`/api/trees/${treeId}/individuals`),
+  getIndividual: (treeId: string, id: string) =>
+    request<import("../types").Individual>(`/api/trees/${treeId}/individuals/${id}`),
   createIndividual: (treeId: string, body: Partial<import("../types").Individual>) =>
     request<import("../types").Individual>(`/api/trees/${treeId}/individuals`, {
       method: "POST",

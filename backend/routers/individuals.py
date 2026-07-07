@@ -22,14 +22,28 @@ def _get_individual(db: Session, tree: FamilyTree, individual_id: uuid.UUID) -> 
 
 @router.get("", response_model=list[IndividualOut])
 def list_individuals(
-    tree: FamilyTree = Depends(get_accessible_tree), db: Session = Depends(get_db)
-) -> list[Individual]:
+    include_photos: bool = False,
+    tree: FamilyTree = Depends(get_accessible_tree),
+    db: Session = Depends(get_db),
+) -> list[IndividualOut]:
+    """List individuals. Photo thumbnails (base64 data URLs) are OMITTED by
+    default — they multiply the payload of every list fetch; the detail
+    endpoint (and the visualization endpoints, which render them) still
+    include them. Pass include_photos=true to embed them here too."""
     stmt = (
         select(Individual)
         .where(Individual.tree_id == tree.id)
         .order_by(Individual.surname, Individual.given_name)
     )
-    return list(db.scalars(stmt))
+    people = db.scalars(stmt)
+    if include_photos:
+        return [IndividualOut.model_validate(p) for p in people]
+    out = []
+    for p in people:
+        dto = IndividualOut.model_validate(p)
+        dto.photo_url = None
+        out.append(dto)
+    return out
 
 
 @router.post("", response_model=IndividualOut, status_code=status.HTTP_201_CREATED)

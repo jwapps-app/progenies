@@ -24,6 +24,10 @@ const H_GAP = 30; // horizontal gap between adjacent ancestors
  */
 export default function AncestorChart({ root, onSelect, theme, highlightIds }: Props) {
   const svgRef = useRef<SVGSVGElement | null>(null);
+  // Preserve the user's pan/zoom across redraws of the SAME root (edits,
+  // theme/highlight changes); only fit-to-view when the root changes.
+  const savedTransform = useRef<d3.ZoomTransform | null>(null);
+  const viewKey = useRef<string>("");
 
   useEffect(() => {
     const svgEl = svgRef.current;
@@ -45,7 +49,10 @@ export default function AncestorChart({ root, onSelect, theme, highlightIds }: P
     const zoom = d3
       .zoom<SVGSVGElement, unknown>()
       .scaleExtent([0.1, 2.5])
-      .on("zoom", (event) => gZoom.attr("transform", event.transform.toString()));
+      .on("zoom", (event) => {
+        gZoom.attr("transform", event.transform.toString());
+        savedTransform.current = event.transform;
+      });
     svg.call(zoom);
 
     // Links: each person up to its parents (an inverted fork).
@@ -119,10 +126,24 @@ export default function AncestorChart({ root, onSelect, theme, highlightIds }: P
       const ty = vh / 2 - ((minY + maxY) / 2) * scale;
       svg.call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
     };
-    fitToView();
+    // Same root as the previous draw → restore the user's pan/zoom instead of
+    // yanking them back to the whole-chart fit.
+    if (viewKey.current === root.id && savedTransform.current) {
+      svg.call(zoom.transform, savedTransform.current);
+    } else {
+      viewKey.current = root.id;
+      fitToView();
+    }
 
     let fitRaf = 0;
+    // ResizeObserver fires once immediately on observe() — skip that initial
+    // callback or it would override the transform we just restored.
+    let firstObserve = true;
     const resizeObserver = new ResizeObserver(() => {
+      if (firstObserve) {
+        firstObserve = false;
+        return;
+      }
       cancelAnimationFrame(fitRaf);
       fitRaf = requestAnimationFrame(fitToView);
     });
