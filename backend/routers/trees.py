@@ -4,6 +4,7 @@ A tree has one owner (family_trees.user_id) plus any number of collaborators
 (tree_shares). Owners can do everything, including managing who a tree is shared
 with; collaborators get 'editor' (read + write) or 'viewer' (read-only) access.
 """
+import secrets
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -27,6 +28,8 @@ def _tree_out(tree: FamilyTree, role: str, owner_username: str | None) -> TreeOu
         updated_at=tree.updated_at,
         role=role,
         owner_username=owner_username,
+        # The public link token is the owner's business only.
+        share_token=tree.share_token if role == "owner" else None,
     )
 
 
@@ -151,3 +154,32 @@ def revoke_share(
     if share is not None:
         db.delete(share)
         db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Public read-only link (owner-only management; consumed by /public/{token})
+# ---------------------------------------------------------------------------
+@router.post("/{tree_id}/share-link", response_model=TreeOut)
+def create_share_link(
+    tree: FamilyTree = Depends(get_owned_tree),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> TreeOut:
+    """Generate (or regenerate) the tree's public read-only link token."""
+    tree.share_token = secrets.token_urlsafe(16)
+    db.commit()
+    db.refresh(tree)
+    return _tree_out(tree, "owner", user.username)
+
+
+@router.delete("/{tree_id}/share-link", response_model=TreeOut)
+def revoke_share_link(
+    tree: FamilyTree = Depends(get_owned_tree),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> TreeOut:
+    """Revoke the public link — the old URL immediately stops working."""
+    tree.share_token = None
+    db.commit()
+    db.refresh(tree)
+    return _tree_out(tree, "owner", user.username)

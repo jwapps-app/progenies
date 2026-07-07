@@ -90,7 +90,7 @@ export async function restoreSession(): Promise<string | null> {
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   let res = await rawRequest(path, options);
 
-  if (res.status === 401 && !path.startsWith("/auth/")) {
+  if (res.status === 401 && !path.startsWith("/auth/") && !path.startsWith("/public/")) {
     const refreshed = await tryRefresh();
     if (refreshed) {
       res = await rawRequest(path, options);
@@ -169,6 +169,22 @@ export const api = {
     }),
   revokeShare: (treeId: string, userId: string) =>
     request<void>(`/api/trees/${treeId}/shares/${userId}`, { method: "DELETE" }),
+  createShareLink: (treeId: string) =>
+    request<import("../types").Tree>(`/api/trees/${treeId}/share-link`, { method: "POST" }),
+  revokeShareLink: (treeId: string) =>
+    request<import("../types").Tree>(`/api/trees/${treeId}/share-link`, { method: "DELETE" }),
+
+  // Public (unauthenticated) share-link reads
+  publicTree: (token: string) =>
+    request<{ name: string; description: string | null }>(`/public/${token}/tree`),
+  publicIndividuals: (token: string) =>
+    request<import("../types").Individual[]>(`/public/${token}/individuals`),
+  publicFamilies: (token: string) =>
+    request<import("../types").Family[]>(`/public/${token}/families`),
+  publicDescendants: (token: string, individualId: string) =>
+    request<import("../types").TreeNode>(`/public/${token}/descendants/${individualId}`),
+  publicAncestors: (token: string, individualId: string) =>
+    request<import("../types").AncestorNode>(`/public/${token}/ancestors/${individualId}`),
 
   // Individuals. The list omits photo thumbnails (they multiply the payload);
   // fetch a person's detail for their photo.

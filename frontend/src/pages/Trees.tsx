@@ -208,6 +208,42 @@ function ShareDialog({ tree, onClose }: { tree: Tree; onClose: () => void }) {
   const [pickRole, setPickRole] = useState("editor");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [shareToken, setShareToken] = useState<string | null>(tree.share_token ?? null);
+  const [copied, setCopied] = useState(false);
+
+  const shareUrl = shareToken ? `${window.location.origin}/share/${shareToken}` : null;
+
+  async function handleCreateLink() {
+    setError(null);
+    try {
+      const updated = await api.createShareLink(tree.id);
+      setShareToken(updated.share_token ?? null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create link");
+    }
+  }
+
+  async function handleRevokeLink() {
+    if (!confirm("Revoke the public link? Anyone using it will lose access immediately.")) return;
+    setError(null);
+    try {
+      await api.revokeShareLink(tree.id);
+      setShareToken(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to revoke link");
+    }
+  }
+
+  async function handleCopyLink() {
+    if (!shareUrl) return;
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* clipboard unavailable — the URL is visible to copy manually */
+    }
+  }
 
   async function refresh() {
     try {
@@ -274,6 +310,43 @@ function ShareDialog({ tree, onClose }: { tree: Tree; onClose: () => void }) {
           Collaborators can open this tree from their own account. Editors can make changes;
           viewers have read-only access.
         </p>
+
+        <div className="rounded-lg border border-gray-200 p-3 dark:border-slate-700">
+          <p className="mb-2 text-sm font-semibold text-gray-700 dark:text-slate-200">
+            Public link <span className="font-normal text-gray-400">(read-only, no account needed)</span>
+          </p>
+          {shareUrl ? (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <input
+                  readOnly
+                  value={shareUrl}
+                  onFocus={(e) => e.target.select()}
+                  className="min-w-0 flex-1 rounded border border-gray-300 bg-gray-50 px-2 py-1 text-xs text-gray-600 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-300"
+                />
+                <button
+                  onClick={handleCopyLink}
+                  className="shrink-0 rounded-lg bg-brand px-2.5 py-1 text-xs font-medium text-white hover:bg-brand-light"
+                >
+                  {copied ? "Copied!" : "Copy"}
+                </button>
+              </div>
+              <button
+                onClick={handleRevokeLink}
+                className="text-xs text-gray-400 hover:text-red-600 dark:text-slate-500 dark:hover:text-red-400"
+              >
+                Revoke link
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={handleCreateLink}
+              className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-100 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-700"
+            >
+              Create public link
+            </button>
+          )}
+        </div>
 
         {shares.length > 0 ? (
           <ul className="divide-y divide-gray-200 dark:divide-slate-700">

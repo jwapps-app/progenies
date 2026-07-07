@@ -118,12 +118,9 @@ def _require_individual(db: Session, tree: FamilyTree, individual_id: uuid.UUID)
     return indi
 
 
-@router.get("/descendants/{individual_id}", response_model=DescendantNode)
-def descendants(
-    individual_id: uuid.UUID,
-    tree: FamilyTree = Depends(get_accessible_tree),
-    db: Session = Depends(get_db),
-) -> DescendantNode:
+def build_descendants(db: Session, tree: FamilyTree, individual_id: uuid.UUID) -> DescendantNode:
+    """Assemble the descendant (union) tree for a root person. Shared by the
+    authenticated route and the public share-link route."""
     root = _require_individual(db, tree, individual_id)
 
     reachable = {
@@ -219,12 +216,9 @@ def descendants(
     return result
 
 
-@router.get("/ancestors/{individual_id}", response_model=TreeNode)
-def ancestors(
-    individual_id: uuid.UUID,
-    tree: FamilyTree = Depends(get_accessible_tree),
-    db: Session = Depends(get_db),
-) -> TreeNode:
+def build_ancestors(db: Session, tree: FamilyTree, individual_id: uuid.UUID) -> TreeNode:
+    """Assemble the ancestor (pedigree) tree for a root person. Shared by the
+    authenticated route and the public share-link route."""
     root = _require_individual(db, tree, individual_id)
     rows = db.execute(
         _ANCESTOR_CTE, {"root": root.id, "tree": tree.id, "max_gen": MAX_GENERATIONS}
@@ -264,3 +258,21 @@ def ancestors(
                     child_node.children.append(parent_node)
 
     return nodes[root.id]
+
+
+@router.get("/descendants/{individual_id}", response_model=DescendantNode)
+def descendants(
+    individual_id: uuid.UUID,
+    tree: FamilyTree = Depends(get_accessible_tree),
+    db: Session = Depends(get_db),
+) -> DescendantNode:
+    return build_descendants(db, tree, individual_id)
+
+
+@router.get("/ancestors/{individual_id}", response_model=TreeNode)
+def ancestors(
+    individual_id: uuid.UUID,
+    tree: FamilyTree = Depends(get_accessible_tree),
+    db: Session = Depends(get_db),
+) -> TreeNode:
+    return build_ancestors(db, tree, individual_id)

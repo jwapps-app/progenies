@@ -15,6 +15,8 @@ export interface Tree {
   role: string;
   /** For trees shared with this user, the owner's username; null when owned. */
   owner_username: string | null;
+  /** Public read-only link token (owner's view only), or null. */
+  share_token?: string | null;
 }
 
 /** A collaborator grant on a tree. */

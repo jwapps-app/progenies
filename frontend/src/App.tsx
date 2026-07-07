@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import { useAuth } from "./store/auth";
 import LoginPage from "./pages/Login";
+import PublicTreePage from "./pages/PublicTree";
 import TreesPage from "./pages/Trees";
 import TreeViewPage from "./pages/TreeView";
 
@@ -23,6 +24,8 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      {/* Public share link — no account required; the token is the credential. */}
+      <Route path="/share/:token" element={<PublicTreePage />} />
       <Route
         path="/"
         element={

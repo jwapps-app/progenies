@@ -17,6 +17,7 @@ from routers.users import router as users_router
 from routers.individuals import router as individuals_router
 from routers.trees import router as trees_router
 from routers.visualization import router as visualization_router
+from routers.public import router as public_router
 from routers.sources import router as sources_router
 from routers.warnings import router as warnings_router
 
@@ -45,6 +46,9 @@ _LIGHTWEIGHT_MIGRATIONS = (
     # First-account-is-admin: add the flag, and on existing installs promote the
     # earliest account if no admin exists yet (safe to run repeatedly).
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE",
+    # Public read-only share links.
+    "ALTER TABLE family_trees ADD COLUMN IF NOT EXISTS share_token TEXT",
+    "CREATE UNIQUE INDEX IF NOT EXISTS ix_family_trees_share_token ON family_trees (share_token)",
     # Refresh-token revocation (bumped on password reset).
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 0",
     # Citation lookups (merge re-pointing, cascade deletes) filter by these FKs.
@@ -120,4 +124,5 @@ app.include_router(visualization_router)
 app.include_router(duplicates_router)
 app.include_router(warnings_router)
 app.include_router(sources_router)
+app.include_router(public_router)
 app.include_router(users_router)

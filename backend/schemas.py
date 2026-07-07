@@ -71,6 +71,8 @@ class TreeOut(BaseModel):
     # it. Owned trees report role="owner" with owner_username = the requester.
     role: str = "owner"
     owner_username: str | None = None
+    # Public read-only link token — present only for the OWNER's view.
+    share_token: str | None = None
 
 
 # ---------------------------------------------------------------------------

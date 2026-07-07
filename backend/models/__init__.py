@@ -55,6 +55,8 @@ class FamilyTree(Base):
     )
     name: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
+    # Public read-only link token; NULL when the tree isn't publicly shared.
+    share_token: Mapped[str | None] = mapped_column(Text, unique=True, index=True)
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
