@@ -8,6 +8,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from auth.deps import get_admin_user, get_current_user
@@ -55,7 +56,12 @@ def create_user(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Username already taken")
     user = User(username=payload.username, password_hash=hash_password(payload.password))
     db.add(user)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # Concurrent create with the same username slipped past the check.
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Username already taken")
     db.refresh(user)
     return user
 
@@ -69,6 +75,8 @@ def reset_password(
 ) -> None:
     user = _require_user(db, user_id)
     user.password_hash = hash_password(payload.password)
+    # Revoke every outstanding refresh token — a reset must end old sessions.
+    user.token_version += 1
     db.commit()
 
 

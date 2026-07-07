@@ -10,7 +10,8 @@ from pydantic import BaseModel, ConfigDict, Field
 # ---------------------------------------------------------------------------
 class UserCreate(BaseModel):
     username: str = Field(min_length=3, max_length=64)
-    password: str = Field(min_length=8, max_length=128)
+    # bcrypt silently ignores bytes past 72 — cap so no password is truncated.
+    password: str = Field(min_length=8, max_length=72)
 
 
 class UserOut(BaseModel):
@@ -29,7 +30,7 @@ class RegistrationStatus(BaseModel):
 
 
 class PasswordReset(BaseModel):
-    password: str = Field(min_length=8, max_length=128)
+    password: str = Field(min_length=8, max_length=72)
 
 
 class LoginRequest(BaseModel):
@@ -159,7 +160,7 @@ class DismissedPairOut(BaseModel):
 class ChildRef(BaseModel):
     individual_id: uuid.UUID
     birth_order: int | None = None
-    relation: str = "biological"  # biological | adopted | step | foster
+    relation: str = Field(default="biological", pattern="^(biological|adopted|step|foster)$")
 
 
 class FamilyBase(BaseModel):

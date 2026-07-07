@@ -44,6 +44,11 @@ _LIGHTWEIGHT_MIGRATIONS = (
     # First-account-is-admin: add the flag, and on existing installs promote the
     # earliest account if no admin exists yet (safe to run repeatedly).
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE",
+    # Refresh-token revocation (bumped on password reset).
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 0",
+    # Citation lookups (merge re-pointing, cascade deletes) filter by these FKs.
+    "CREATE INDEX IF NOT EXISTS ix_citations_individual_id ON citations (individual_id)",
+    "CREATE INDEX IF NOT EXISTS ix_citations_source_id ON citations (source_id)",
     """UPDATE users SET is_admin = TRUE
        WHERE id = (SELECT id FROM users ORDER BY created_at, id LIMIT 1)
          AND NOT EXISTS (SELECT 1 FROM users WHERE is_admin)""",

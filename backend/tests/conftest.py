@@ -12,6 +12,7 @@ import os
 # Must be set before config/app import (pydantic reads env at import time).
 os.environ.setdefault("SECRET_KEY", "test-secret-key-not-for-production")
 os.environ.setdefault("BCRYPT_ROUNDS", "4")  # fast hashing for tests
+os.environ.setdefault("COOKIE_SECURE", "false")  # TestClient runs over http
 
 _db_url = os.environ.get("DATABASE_URL", "")
 if "test" not in _db_url.rsplit("/", 1)[-1]:

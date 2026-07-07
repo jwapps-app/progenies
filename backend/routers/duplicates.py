@@ -3,6 +3,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from auth.deps import get_accessible_tree, get_editable_tree
@@ -51,7 +52,10 @@ def dismiss(
     )
     if existing is None:
         db.add(DismissedDuplicate(tree_id=tree.id, individual_a=a, individual_b=b))
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError:  # concurrent dismiss of the same pair — already done
+            db.rollback()
 
 
 @router.post("/undismiss", status_code=status.HTTP_204_NO_CONTENT)

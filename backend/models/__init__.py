@@ -36,6 +36,9 @@ class User(Base):
     # The first registered account is the administrator: open registration closes
     # after it exists, and only admins can create/manage further accounts.
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Embedded in refresh tokens; bumping it (e.g. on password reset) instantly
+    # invalidates every outstanding refresh token for this account.
+    token_version: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     trees: Mapped[list["FamilyTree"]] = relationship(
@@ -226,10 +229,10 @@ class Citation(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
     source_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("sources.id", ondelete="CASCADE"), nullable=False
+        UUID(as_uuid=True), ForeignKey("sources.id", ondelete="CASCADE"), nullable=False, index=True
     )
     individual_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("individuals.id", ondelete="CASCADE"), nullable=False
+        UUID(as_uuid=True), ForeignKey("individuals.id", ondelete="CASCADE"), nullable=False, index=True
     )
     page: Mapped[str | None] = mapped_column(Text)
     notes: Mapped[str | None] = mapped_column(Text)

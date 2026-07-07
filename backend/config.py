@@ -24,18 +24,17 @@ class Settings(BaseSettings):
     # CORS: comma-separated list of allowed origins for the frontend.
     CORS_ORIGINS: str = "http://localhost:5173,http://localhost:3000"
 
-    # CORS regex (in addition to the list above). The default accepts localhost,
-    # 127.0.0.1, and private-LAN IPs (10.x, 192.168.x, 172.16-31.x) on any port,
-    # so local dev works whether the app is opened at localhost or the machine's
-    # LAN IP (handy for testing the PWA on a phone). Set to "" to disable in prod.
-    CORS_ORIGIN_REGEX: str = (
-        r"https?://("
-        r"localhost|127\.0\.0\.1|"
-        r"10\.\d{1,3}\.\d{1,3}\.\d{1,3}|"
-        r"192\.168\.\d{1,3}\.\d{1,3}|"
-        r"172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}"
-        r")(:\d+)?"
-    )
+    # CORS regex (in addition to the list above). SECURE BY DEFAULT: empty —
+    # with allow_credentials on, a broad regex lets any matching origin call
+    # the API with the user's refresh cookie. Dev (docker-compose.yml) opts
+    # INTO the localhost/private-LAN regex so the PWA can be tested from a
+    # phone/iPad at the machine's LAN IP; production leaves it empty (the SPA
+    # is same-origin behind the nginx proxy and needs no CORS at all).
+    CORS_ORIGIN_REGEX: str = ""
+
+    # Refresh cookie Secure flag. TRUE by default (production is HTTPS behind
+    # the Cloudflare Tunnel); dev (plain http on the LAN) sets it to false.
+    COOKIE_SECURE: bool = True
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

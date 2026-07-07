@@ -82,10 +82,11 @@ def update_tree(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> TreeOut:
-    if payload.name is not None:
-        tree.name = payload.name
-    if payload.description is not None:
-        tree.description = payload.description
+    # exclude_unset so an explicit null CLEARS description (was impossible).
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        if field == "name" and value is None:
+            continue  # name is required; ignore an explicit null
+        setattr(tree, field, value)
     db.commit()
     db.refresh(tree)
     return _tree_out(tree, "owner", user.username)
