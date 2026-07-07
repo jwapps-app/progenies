@@ -235,7 +235,9 @@ export const api = {
       body: form,
     });
   },
-  exportUrl: (treeId: string) => `${BASE_URL}/api/trees/${treeId}/export`,
+  // Fetched through request() so the Bearer token is attached — a bare link
+  // navigation carries no Authorization header and 401s.
+  exportGedcom: (treeId: string) => request<string>(`/api/trees/${treeId}/export`),
 };
 
 export { BASE_URL };

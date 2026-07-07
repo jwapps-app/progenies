@@ -1,5 +1,6 @@
 import type { Individual } from "../types";
 import { displayName } from "../types";
+import { yearOf } from "./gedcomDate";
 
 export interface DuplicatePair {
   a: Individual;
@@ -10,11 +11,8 @@ function normName(p: Individual): string {
   return [p.given_name, p.surname].filter(Boolean).join(" ").toLowerCase().trim();
 }
 
-function year(s: string | null): number | null {
-  if (!s) return null;
-  const m = s.match(/\d{3,4}/);
-  return m ? parseInt(m[0], 10) : null;
-}
+// BC-aware, shared with the warnings engine and birth-order sorting.
+const year = yearOf;
 
 /**
  * Find likely duplicate individuals: same name (given + surname) with compatible

@@ -12,6 +12,7 @@ import { describeRelationship, relationshipPath } from "../utils/relationship";
 import { findWarnings } from "../utils/warnings";
 import { exportChartPng } from "../utils/exportImage";
 import { findDuplicates, personSummary } from "../utils/duplicates";
+import { yearOf } from "../utils/gedcomDate";
 import PersonForm, { PersonFields, fieldsToPayload } from "../components/PersonForm";
 import type { AncestorNode, ChildRef, Family, ImportSummary, Individual, TreeNode } from "../types";
 import { displayName } from "../types";
@@ -42,16 +43,12 @@ interface FamilyForm {
 }
 type UndoEntry = { label: string; run: () => Promise<unknown> };
 
-/** Best-effort birth year from a free-text date ("c. 1850", "ABT 1900 BC",
- * "1780"). BC years are negative so they sort before AD. Returns null when no
- * year is present (those children sort last when ordering by birth). */
-function birthYear(date: string | null | undefined): number | null {
-  if (!date) return null;
-  const m = date.match(/\d{1,5}/);
-  if (!m) return null;
-  const year = parseInt(m[0], 10);
-  return /\bb\.?\s*c\.?(\s*e\.?)?\b/i.test(date) ? -year : year;
-}
+/** Best-effort birth year from a free-text date. Delegates to the shared
+ * BC-aware parser — the old local version grabbed the FIRST digit run, which
+ * for exact dates like "12 MAR 1880" returned the day (12), so "Sort by birth
+ * date" persisted a wrong birth_order. Returns null when no year is present
+ * (those children sort last when ordering by birth). */
+const birthYear = yearOf;
 
 /** Returns a callback whose IDENTITY never changes but which always invokes the
  * latest `fn`. Handlers passed to the chart components must be stable — they sit
@@ -79,6 +76,7 @@ export default function TreeViewPage() {
   // (read-only collaborator) sees the tree but every editing control is hidden.
   const [treeRole, setTreeRole] = useState<string>("owner");
   const [ownerUsername, setOwnerUsername] = useState<string | null>(null);
+  const [treeName, setTreeName] = useState<string>("");
   const canEdit = treeRole !== "viewer";
   const [importing, setImporting] = useState(false);
   const [summary, setSummary] = useState<ImportSummary | null>(null);
@@ -173,6 +171,26 @@ export default function TreeViewPage() {
     exportChartPng(svg, `family-tree-${viewMode}.png`, bg);
   }
 
+  // Download the GEDCOM through the API client (which attaches the Bearer
+  // token). A plain <a href> navigation sends no Authorization header, so the
+  // endpoint 401s — the old link was broken.
+  async function handleExportGedcom() {
+    if (!treeId) return;
+    setError(null);
+    try {
+      const text = await api.exportGedcom(treeId);
+      const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${(treeName || "family-tree").replace(/[^\w.-]+/g, "_")}.ged`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "GEDCOM export failed");
+    }
+  }
+
   // Merge `duplicateId` into `survivorId` (combines families, children, details).
   async function handleMerge(survivorId: string, duplicateId: string) {
     if (!treeId) return;
@@ -207,6 +225,7 @@ export default function TreeViewPage() {
       setFamilies(fams);
       setTreeRole(tree.role);
       setOwnerUsername(tree.owner_username);
+      setTreeName(tree.name);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load tree data");
     } finally {
@@ -1307,12 +1326,13 @@ export default function TreeViewPage() {
             </button>
           )}
           {treeId && individuals.length > 0 && (
-            <a
-              href={api.exportUrl(treeId)}
+            <button
+              onClick={handleExportGedcom}
+              title="Download this tree as a GEDCOM (.ged) file"
               className="rounded-lg border border-gray-300 dark:border-slate-600 px-3 py-1.5 text-sm font-medium text-gray-700 dark:text-slate-200 hover:bg-gray-100 dark:hover:bg-slate-700"
             >
               Export GEDCOM
-            </a>
+            </button>
           )}
         </div>
       </header>
@@ -2339,6 +2359,8 @@ function individualPayload(i: Individual): Partial<Individual> {
     given_name: i.given_name,
     middle_name: i.middle_name,
     surname: i.surname,
+    married_name: i.married_name,
+    nickname: i.nickname,
     sex: i.sex,
     birth_date: i.birth_date,
     birth_place: i.birth_place,
@@ -2348,6 +2370,9 @@ function individualPayload(i: Individual): Partial<Individual> {
     notes: i.notes,
     photo_url: i.photo_url,
     is_unknown: i.is_unknown,
+    // Preserved so undoing a delete keeps GEDCOM round-trip fidelity — the
+    // backend accepts it on create and echoes it on export.
+    gedcom_xref: i.gedcom_xref,
   };
 }
 

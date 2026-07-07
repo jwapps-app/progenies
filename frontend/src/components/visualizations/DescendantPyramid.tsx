@@ -996,6 +996,15 @@ export default function DescendantPyramid({
     });
     resizeObserver.observe(svgEl);
 
+    // Always clear previous magnify handlers first: they're bound on the
+    // PERSISTENT <svg> element (selectAll("*").remove() clears children, not
+    // the svg's own listeners), so switching to "off" would otherwise leave a
+    // stale bulge handler running O(n) work per mousemove against the detached
+    // previous chart — a CPU and memory leak.
+    svg.on(".mag", null);
+    // The bulge's pending animation frame, cancelled on redraw/unmount.
+    let magFrame = 0;
+
     // ----- Hover loupe (magnifying glass) ---------------------------------
     // A circular lens follows the cursor and shows the chart enlarged to a
     // readable size. It only appears while the tree is zoomed out (scale < the
@@ -1041,17 +1050,33 @@ export default function DescendantPyramid({
     // distorting the layout in place. On each move it re-distorts every node, link
     // path and marriage ring; links anchor to box CENTRES while distorting (the
     // scaled boxes cover the join) so nothing detaches. Resets on mouse-leave.
+    //
+    // Coordinate spaces: the fisheye map and all stored node/ring/link points
+    // are in LAYOUT space; the screen swaps axes in horizontal orientation.
+    // linkPath swaps AFTER distorting, so node/ring transforms must do the
+    // same (`sw`), and the focus point (from the pointer, i.e. screen space)
+    // must be swapped INTO layout space — sw is its own inverse.
     if (magnify === "bulge") {
+      // Skip the O(n) reset unless something is actually distorted — otherwise
+      // every mousemove while zoomed-in rebuilds every path for no visible change.
+      let distorted = false;
       const reset = () => {
+        if (!distorted) return;
+        distorted = false;
         for (const { el, childEl, link } of linkEls) {
           const lp = linkPath(link, IDENTITY);
           el.attr("d", lp.d);
           if (childEl && lp.childD) childEl.attr("d", lp.childD);
         }
-        for (const n of nodeEls) n.el.attr("transform", `translate(${n.x},${n.y})`);
-        for (const r of ringEls) r.el.attr("transform", `translate(${r.x},${r.y})`);
+        for (const n of nodeEls) {
+          const [nx, ny] = sw(n.x, n.y);
+          n.el.attr("transform", `translate(${nx},${ny})`);
+        }
+        for (const r of ringEls) {
+          const [rx, ry] = sw(r.x, r.y);
+          r.el.attr("transform", `translate(${rx},${ry})`);
+        }
       };
-      let frame = 0;
       svg.on("mousemove.mag", (event: MouseEvent) => {
         const t = d3.zoomTransform(svgEl);
         if (t.k >= LOUPE_SCALE) {
@@ -1059,15 +1084,17 @@ export default function DescendantPyramid({
           return;
         }
         const [sx, sy] = d3.pointer(event, svgEl);
-        const fx = (sx - t.x) / t.k; // focus in content coordinates
-        const fy = (sy - t.y) / t.k;
+        const cx = (sx - t.x) / t.k; // focus in content (screen) coordinates
+        const cy = (sy - t.y) / t.k;
+        const [fx, fy] = sw(cx, cy); // → layout space (swap is self-inverse)
         const radius = BULGE_RADIUS / t.k;
         // Peak magnification needed to bring the focal node up to a readable absolute
         // size at the current zoom: readable / current zoom (e.g. 0.1× tree → ~10×).
         // The fisheye's peak scale ≈ its distortion, so drive both from this.
         const peak = Math.min(BULGE_MAX_PEAK, Math.max(BULGE_MIN_PEAK, BULGE_READABLE_SCALE / t.k));
-        if (frame) cancelAnimationFrame(frame);
-        frame = requestAnimationFrame(() => {
+        if (magFrame) cancelAnimationFrame(magFrame);
+        magFrame = requestAnimationFrame(() => {
+          distorted = true;
           const { map, scale } = makeFisheye(fx, fy, radius, peak, peak);
           for (const { el, childEl, link } of linkEls) {
             const lp = linkPath(link, map, true);
@@ -1076,16 +1103,18 @@ export default function DescendantPyramid({
           }
           for (const n of nodeEls) {
             const [dx, dy] = map(n.x, n.y);
-            n.el.attr("transform", `translate(${dx},${dy}) scale(${scale(n.x, n.y)})`);
+            const [px, py] = sw(dx, dy);
+            n.el.attr("transform", `translate(${px},${py}) scale(${scale(n.x, n.y)})`);
           }
           for (const r of ringEls) {
             const [dx, dy] = map(r.x, r.y);
-            r.el.attr("transform", `translate(${dx},${dy}) scale(${scale(r.x, r.y)})`);
+            const [px, py] = sw(dx, dy);
+            r.el.attr("transform", `translate(${px},${py}) scale(${scale(r.x, r.y)})`);
           }
         });
       });
       svg.on("mouseleave.mag", () => {
-        if (frame) cancelAnimationFrame(frame);
+        if (magFrame) cancelAnimationFrame(magFrame);
         reset();
       });
     }
@@ -1093,6 +1122,8 @@ export default function DescendantPyramid({
     return () => {
       resizeObserver.disconnect();
       cancelAnimationFrame(fitRaf);
+      if (magFrame) cancelAnimationFrame(magFrame);
+      svg.on(".mag", null);
     };
   }, [
     root,

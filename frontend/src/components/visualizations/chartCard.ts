@@ -74,10 +74,13 @@ function truncate(s: string, n: number): string {
  * there is no given name (e.g. an unknown placeholder), the surname — or
  * "Unknown" — takes the single top line instead. */
 export function nameLines(p: CardPerson): { line1: string; line2: string } {
+  // filter(Boolean) guards a whitespace-only middle name — "".split(/\s+/)
+  // yields [""], and [""][0][0] would throw inside the chart render effect.
   const initials = p.middle_name
     ? p.middle_name
         .trim()
         .split(/\s+/)
+        .filter(Boolean)
         .map((m) => `${m[0].toUpperCase()}.`)
         .join(" ")
     : "";

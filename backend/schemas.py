@@ -110,6 +110,9 @@ class IndividualBase(BaseModel):
     age: str | None = None
     notes: str | None = None
     photo_url: str | None = None
+    # Writable so client-side restore (undo of a delete) can preserve the
+    # original GEDCOM id — round-trip fidelity survives a delete+undo.
+    gedcom_xref: str | None = None
 
 
 class IndividualCreate(IndividualBase):
@@ -125,7 +128,6 @@ class IndividualOut(IndividualBase):
 
     id: uuid.UUID
     tree_id: uuid.UUID
-    gedcom_xref: str | None
     is_unknown: bool
     created_at: datetime
     updated_at: datetime

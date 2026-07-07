@@ -1,5 +1,6 @@
 import type { Family, Individual } from "../types";
 import { displayName } from "../types";
+import { yearOf } from "./gedcomDate";
 
 export interface TreeWarning {
   /**
@@ -13,12 +14,10 @@ export interface TreeWarning {
   message: string;
 }
 
-/** Best-effort year extraction from a free-text GEDCOM date (first 3–4 digit run). */
-function year(s: string | null): number | null {
-  if (!s) return null;
-  const m = s.match(/\d{3,4}/);
-  return m ? parseInt(m[0], 10) : null;
-}
+/** BC-aware year extraction. The previous local version ignored era, so every
+ * biblical (BC) lineage fired false "died before born" / "parent not older"
+ * warnings — BC years run BACKWARD (2000 BC precedes 1500 BC). */
+const year = yearOf;
 
 /**
  * Scan the tree for likely data errors: impossible dates, implausible parent

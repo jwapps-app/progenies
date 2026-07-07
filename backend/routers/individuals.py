@@ -102,12 +102,15 @@ _MERGE_FILL_FIELDS = (
     "given_name",
     "middle_name",
     "surname",
+    "married_name",
+    "nickname",
     "birth_date",
     "birth_place",
     "death_date",
     "death_place",
     "age",
     "notes",
+    "photo_url",
     "gedcom_xref",
 )
 
@@ -170,7 +173,48 @@ def merge_individual(
         cit.individual_id = survivor.id
     db.flush()
 
-    # The merge can create a self-marriage (survivor married the duplicate) — drop it.
+    # Re-pointing can leave TWO family rows for the same couple (survivor and
+    # duplicate were each recorded as married to the same third person). Merge
+    # them: move child links across, fill missing marriage details, drop the
+    # extra — otherwise the couple exports with duplicate FAMS records and
+    # their children split across two family units.
+    kept_by_pair: dict[tuple, Family] = {}
+    for fam in list(
+        db.scalars(
+            select(Family).where(
+                Family.tree_id == tree.id,
+                (Family.husband_id == survivor.id) | (Family.wife_id == survivor.id),
+            )
+        )
+    ):
+        pair = (fam.husband_id, fam.wife_id)
+        keep = kept_by_pair.get(pair)
+        if keep is None:
+            kept_by_pair[pair] = fam
+            continue
+        for ch in list(db.scalars(select(Child).where(Child.family_id == fam.id))):
+            already = db.get(Child, {"family_id": keep.id, "individual_id": ch.individual_id})
+            if already is None:
+                db.add(
+                    Child(
+                        family_id=keep.id,
+                        individual_id=ch.individual_id,
+                        birth_order=ch.birth_order,
+                        relation=ch.relation,
+                    )
+                )
+            db.delete(ch)
+        for field in ("married_date", "married_place", "divorced_date", "notes", "marriage_order", "gedcom_xref"):
+            if not getattr(keep, field) and getattr(fam, field):
+                setattr(keep, field, getattr(fam, field))
+        db.flush()
+        db.delete(fam)
+    db.flush()
+
+    # The merge can create a self-marriage (survivor married the duplicate).
+    # A childless one is just dropped; one WITH children becomes a single-parent
+    # family instead — deleting it would cascade the child links away and
+    # silently orphan the couple's kids from this parent.
     for fam in list(
         db.scalars(
             select(Family).where(
@@ -180,7 +224,11 @@ def merge_individual(
             )
         )
     ):
-        db.delete(fam)
+        has_children = db.scalar(select(Child.individual_id).where(Child.family_id == fam.id))
+        if has_children is not None:
+            fam.wife_id = None
+        else:
+            db.delete(fam)
 
     db.delete(dup)
     db.commit()
