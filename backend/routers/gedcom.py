@@ -7,9 +7,9 @@ from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from auth.deps import get_accessible_tree, get_editable_tree
+from auth.deps import get_accessible_tree, get_current_user, get_editable_tree, tree_role
 from database import get_db
-from models import FamilyTree, GedcomFile
+from models import FamilyTree, GedcomFile, User
 from schemas import ImportSummary
 from services.gedcom_export import export_gedcom
 from services.gedcom_import import import_gedcom
@@ -69,9 +69,14 @@ async def import_tree(
 
 @router.get("/export")
 def export_tree(
-    tree: FamilyTree = Depends(get_accessible_tree), db: Session = Depends(get_db)
+    tree: FamilyTree = Depends(get_accessible_tree),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> Response:
-    text = export_gedcom(db, tree)
+    # Read-only viewers may export, but must not WRITE the archive row (an
+    # export by a viewer was mutating the owner's tree data).
+    role = tree_role(db, tree, user)
+    text = export_gedcom(db, tree, archive=role in ("owner", "editor"))
     safe_name = "".join(c for c in tree.name if c.isalnum() or c in (" ", "_", "-")).strip() or "tree"
     # The document is already fully in memory — a plain Response sends it in one
     # write. (StreamingResponse over BytesIO chunked it through a thread executor,

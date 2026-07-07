@@ -11,12 +11,17 @@ SAMPLE_GED = """0 HEAD
 2 VERS 5.5
 2 FORM LINEAGE-LINKED
 1 CHAR UTF-8
+0 @N1@ NOTE Emigrated 1885
+0 @S1@ SOUR
+1 TITL Parish register
 0 @I1@ INDI
 1 NAME Robert /Anderson/
 2 NICK Bob
 1 SEX M
 1 BIRT
 2 DATE 12 MAR 1880
+1 SOUR @S1@
+2 PAGE p. 43
 1 NOTE Line one
 2 CONT Line two
 0 @I2@ INDI
@@ -24,15 +29,20 @@ SAMPLE_GED = """0 HEAD
 1 NAME Mary /Anderson/
 2 TYPE married
 1 SEX F
+1 NOTE @N1@
 0 @I3@ INDI
 1 NAME Junior /Anderson/
 1 SEX M
+1 FAMC @F1@
+2 PEDI adopted
 0 @F1@ FAM
 1 HUSB @I1@
 1 WIFE @I2@
 1 CHIL @I3@
 1 MARR
 2 DATE 1900
+1 _ORDER 2
+1 _UNMAR Y
 0 TRLR
 """
 
@@ -135,27 +145,75 @@ def test_gedcom_import_export_roundtrip(client, admin):
     assert summary["families_imported"] == 1
     assert summary["children_links"] == 1
 
-    # Nickname and married name must have been parsed.
+    # Nickname, married name, PEDI relation, shared-note pointer, and the
+    # custom _ORDER/_UNMAR tags must all have been parsed.
     people = client.get(f"/api/trees/{tree}/individuals", headers=admin).json()
     robert = next(p for p in people if p["given_name"] == "Robert")
     mary = next(p for p in people if p["given_name"] == "Mary")
     assert robert["nickname"] == "Bob"
     assert mary["married_name"] == "Anderson" and mary["surname"] == "Jones"
     assert "Line one\nLine two" in (robert["notes"] or "")
+    assert mary["notes"] == "Emigrated 1885"  # NOTE @N1@ dereferenced
 
-    # Export must round-trip those fields.
+    fams = client.get(f"/api/trees/{tree}/families", headers=admin).json()
+    assert fams[0]["children"][0]["relation"] == "adopted"  # PEDI
+    assert fams[0]["marriage_order"] == 2  # _ORDER
+    assert fams[0]["unmarried"] is True  # _UNMAR
+
+    # Export must round-trip all of it.
     r = client.get(f"/api/trees/{tree}/export", headers=admin)
     assert r.status_code == 200
     text = r.text
-    for marker in ("2 NICK Bob", "2 TYPE married", "0 @I1@ INDI", "1 CHIL @I3@"):
+    for marker in (
+        "2 NICK Bob",
+        "2 TYPE married",
+        "0 @I1@ INDI",
+        "1 CHIL @I3@",
+        "2 PEDI adopted",
+        "1 _ORDER 2",
+        "1 _UNMAR Y",
+        "1 SOUR @S1@",
+        "2 PAGE p. 43",
+    ):
         assert marker in text, marker
 
-    # Importing the export into a fresh tree yields identical counts.
+    # Importing the export into a fresh tree preserves counts AND fidelity.
     tree2 = _mk_tree(client, admin, "Gedcom2")
     r = _upload(client, admin, tree2, text, name="reexport.ged")
     assert r.status_code == 200, r.text
     s2 = r.json()
     assert s2["individuals_imported"] == 3 and s2["families_imported"] == 1
+    fams2 = client.get(f"/api/trees/{tree2}/families", headers=admin).json()
+    assert fams2[0]["children"][0]["relation"] == "adopted"
+    assert fams2[0]["marriage_order"] == 2 and fams2[0]["unmarried"] is True
+
+
+def test_import_xref_collision_gets_fresh_ids(client, admin):
+    """Two files that both use @I1@ must not corrupt the tree's export."""
+    tree = _mk_tree(client, admin, "XrefCollide")
+    assert _upload(client, admin, tree, SAMPLE_GED).status_code == 200
+    other = SAMPLE_GED.replace("Robert", "Zed").replace("Mary", "Zoe").replace("Junior", "Zig")
+    assert _upload(client, admin, tree, other, name="other.ged").status_code == 200
+    text = client.get(f"/api/trees/{tree}/export", headers=admin).text
+    # Every level-0 record id must be unique.
+    ids = [line.split()[1] for line in text.splitlines() if line.startswith("0 @")]
+    assert len(ids) == len(set(ids)), "duplicate xrefs in export"
+
+
+def test_list_individuals_omits_photos_by_default(client, admin):
+    tree = _mk_tree(client, admin, "Photos")
+    r = client.post(
+        f"/api/trees/{tree}/individuals",
+        headers=admin,
+        json={"given_name": "Pic", "photo_url": "data:image/jpeg;base64,QUJD"},
+    )
+    pid = r.json()["id"]
+    listed = client.get(f"/api/trees/{tree}/individuals", headers=admin).json()
+    assert listed[0]["photo_url"] is None
+    listed = client.get(f"/api/trees/{tree}/individuals?include_photos=true", headers=admin).json()
+    assert listed[0]["photo_url"]
+    detail = client.get(f"/api/trees/{tree}/individuals/{pid}", headers=admin).json()
+    assert detail["photo_url"]
 
 
 def test_duplicate_import_guard(client, admin):

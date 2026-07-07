@@ -2,7 +2,18 @@
 
 Reconstruction order: HEAD -> INDI -> FAM -> SOUR -> TRLR. XREFs are reused
 from `gedcom_xref` when present (round-trip fidelity); otherwise stable new
-xrefs are generated for records created inside the app.
+xrefs are generated for records created inside the app. A stored xref that
+appears twice (legacy double imports) is only honoured once — the second
+record gets a fresh id, so the output never contains duplicate record ids.
+
+App data without a standard GEDCOM 5.5 tag rides on custom tags (leading
+underscore, preserved by any spec-compliant reader):
+  _UNKNOWN Y   on INDI — unknown-spouse placeholder
+  _ORDER n     on FAM  — marriage order (1st/2nd/3rd spouse)
+  _GAP Y       on FAM  — unknown-depth descendant link
+  _UNMAR Y     on FAM  — co-parents who are not married
+Child relations use the standard PEDI tag under the child's FAMC link, and
+source citations are emitted as SOUR links under each INDI.
 """
 from __future__ import annotations
 
@@ -12,29 +23,50 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from config import settings
-from models import Child, Family, FamilyTree, GedcomFile, Individual, Source
+from models import Child, Citation, Family, FamilyTree, GedcomFile, Individual, Source
+
+# GEDCOM 5.5 caps physical lines at 255 chars; chunk conservatively below that.
+_MAX_SEGMENT = 232
 
 
-def _line(level: int, tag: str, value: str | None = None) -> str:
+def _line(level: int, tag: str, value: str | None = None, escape: bool = False) -> str:
     if value is None or value == "":
         return f"{level} {tag}"
-    # GEDCOM 5.5: split multi-line values across CONT.
-    lines = str(value).split("\n")
-    out = f"{level} {tag} {lines[0]}"
-    for extra in lines[1:]:
-        out += f"\n{level + 1} CONT {extra}"
-    return out
+    out_lines: list[str] = []
+    for i, seg in enumerate(str(value).split("\n")):
+        if escape and seg.startswith("@"):
+            # Spec: a literal @ at the start of a value is doubled so readers
+            # don't mistake it for a pointer. The parser folds @@ back to @.
+            seg = "@" + seg
+        # CONC-split long segments so no physical line exceeds the 255 limit.
+        head, rest = seg[:_MAX_SEGMENT], seg[_MAX_SEGMENT:]
+        if i == 0:
+            out_lines.append(f"{level} {tag} {head}" if head else f"{level} {tag}")
+        else:
+            out_lines.append(f"{level + 1} CONT {head}" if head else f"{level + 1} CONT")
+        while rest:
+            chunk, rest = rest[:_MAX_SEGMENT], rest[_MAX_SEGMENT:]
+            out_lines.append(f"{level + 1} CONC {chunk}")
+    return "\n".join(out_lines)
 
 
 def _assign_xrefs(items: list, prefix: str) -> dict:
-    """Map each record id -> an xref, reusing stored ones, generating the rest."""
+    """Map each record id -> an xref, reusing stored ones, generating the rest.
+
+    A stored xref is honoured only for its FIRST holder — duplicates (from
+    legacy double imports) get generated ids, keeping the output unambiguous.
+    """
     mapping: dict = {}
-    used: set[str] = {i.gedcom_xref for i in items if i.gedcom_xref}
-    counter = 1
+    used: set[str] = set()
+    pending = []
     for item in items:
-        if item.gedcom_xref:
+        if item.gedcom_xref and item.gedcom_xref not in used:
             mapping[item.id] = item.gedcom_xref
-            continue
+            used.add(item.gedcom_xref)
+        else:
+            pending.append(item)
+    counter = 1
+    for item in pending:
         while f"@{prefix}{counter}@" in used:
             counter += 1
         xref = f"@{prefix}{counter}@"
@@ -48,16 +80,24 @@ def export_gedcom(db: Session, tree: FamilyTree, archive: bool = True) -> str:
     individuals = list(
         db.scalars(select(Individual).where(Individual.tree_id == tree.id).order_by(Individual.created_at))
     )
+    # Deterministic family order, marriage_order first: FAMS order is how other
+    # software infers 1st/2nd marriage, and a stable order keeps repeated
+    # exports byte-identical (the archive dedupes on the content hash).
     families = list(
-        db.scalars(select(Family).where(Family.tree_id == tree.id))
+        db.scalars(
+            select(Family)
+            .where(Family.tree_id == tree.id)
+            .order_by(Family.marriage_order.is_(None), Family.marriage_order, Family.id)
+        )
     )
-    sources = list(db.scalars(select(Source).where(Source.tree_id == tree.id)))
+    sources = list(db.scalars(select(Source).where(Source.tree_id == tree.id).order_by(Source.id)))
 
     indi_xref = _assign_xrefs(individuals, "I")
     fam_xref = _assign_xrefs(families, "F")
     sour_xref = _assign_xrefs(sources, "S")
 
-    # Precompute which families each individual belongs to (FAMS spouse / FAMC child).
+    # Precompute which families each individual belongs to (FAMS spouse / FAMC
+    # child — the child side carries its relation for the PEDI tag).
     spouse_in: dict = {iid: [] for iid in indi_xref}
     child_in: dict = {iid: [] for iid in indi_xref}
     for fam in families:
@@ -76,7 +116,15 @@ def export_gedcom(db: Session, tree: FamilyTree, archive: bool = True) -> str:
         ):
             children_by_family[kid.family_id].append(kid)
             if kid.individual_id in child_in:
-                child_in[kid.individual_id].append(fam_xref[kid.family_id])
+                child_in[kid.individual_id].append((fam_xref[kid.family_id], kid.relation))
+
+    # Source citations per individual (one query).
+    citations_by_indi: dict = {}
+    if individuals:
+        for cit in db.scalars(
+            select(Citation).where(Citation.individual_id.in_(list(indi_xref)))
+        ):
+            citations_by_indi.setdefault(cit.individual_id, []).append(cit)
 
     lines: list[str] = []
 
@@ -125,10 +173,23 @@ def export_gedcom(db: Session, tree: FamilyTree, archive: bool = True) -> str:
                 lines.append(_line(2, "PLAC", indi.death_place))
         for fx in spouse_in.get(indi.id, []):
             lines.append(_line(1, "FAMS", fx))
-        for fx in child_in.get(indi.id, []):
+        for fx, relation in child_in.get(indi.id, []):
             lines.append(_line(1, "FAMC", fx))
+            if relation and relation != "biological":
+                lines.append(_line(2, "PEDI", relation))
+        for cit in citations_by_indi.get(indi.id, []):
+            sx = sour_xref.get(cit.source_id)
+            if sx is None:
+                continue
+            lines.append(_line(1, "SOUR", sx))
+            if cit.page:
+                lines.append(_line(2, "PAGE", cit.page))
+            if cit.notes:
+                lines.append(_line(2, "NOTE", cit.notes, escape=True))
         if indi.notes:
-            lines.append(_line(1, "NOTE", indi.notes))
+            lines.append(_line(1, "NOTE", indi.notes, escape=True))
+        if indi.is_unknown:
+            lines.append(_line(1, "_UNKNOWN", "Y"))
 
     # ----- FAM ------------------------------------------------------------
     for fam in families:
@@ -151,7 +212,13 @@ def export_gedcom(db: Session, tree: FamilyTree, archive: bool = True) -> str:
             lines.append("1 DIV")
             lines.append(_line(2, "DATE", fam.divorced_date))
         if fam.notes:
-            lines.append(_line(1, "NOTE", fam.notes))
+            lines.append(_line(1, "NOTE", fam.notes, escape=True))
+        if fam.marriage_order is not None:
+            lines.append(_line(1, "_ORDER", str(fam.marriage_order)))
+        if fam.gap:
+            lines.append(_line(1, "_GAP", "Y"))
+        if fam.unmarried:
+            lines.append(_line(1, "_UNMAR", "Y"))
 
     # ----- SOUR -----------------------------------------------------------
     for src in sources:
@@ -165,21 +232,31 @@ def export_gedcom(db: Session, tree: FamilyTree, archive: bool = True) -> str:
         if src.date:
             lines.append(_line(1, "DATE", src.date))
         if src.notes:
-            lines.append(_line(1, "NOTE", src.notes))
+            lines.append(_line(1, "NOTE", src.notes, escape=True))
 
     lines.append("0 TRLR")
     text = "\n".join(lines) + "\n"
 
     if archive:
-        db.add(
-            GedcomFile(
-                tree_id=tree.id,
-                filename=f"{tree.name}.ged",
-                direction="export",
-                content=text,
-                file_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
-            )
+        file_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        # Only archive when the content actually changed — clicking export
+        # repeatedly was appending a full copy of the tree every time.
+        latest = db.scalar(
+            select(GedcomFile.file_hash)
+            .where(GedcomFile.tree_id == tree.id, GedcomFile.direction == "export")
+            .order_by(GedcomFile.created_at.desc())
+            .limit(1)
         )
-        db.commit()
+        if latest != file_hash:
+            db.add(
+                GedcomFile(
+                    tree_id=tree.id,
+                    filename=f"{tree.name}.ged",
+                    direction="export",
+                    content=text,
+                    file_hash=file_hash,
+                )
+            )
+            db.commit()
 
     return text

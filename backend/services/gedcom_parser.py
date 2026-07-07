@@ -67,6 +67,10 @@ def _parse_line(line: str) -> tuple[int, str | None, str, str] | None:
     tag_parts = remainder.split(" ", 1)
     tag = tag_parts[0]
     value = tag_parts[1] if len(tag_parts) > 1 else ""
+    # Spec escaping: a value that literally starts with @ is written as @@ so it
+    # isn't mistaken for a pointer. Fold it back.
+    if value.startswith("@@"):
+        value = value[1:]
     return level, xref, tag, value
 
 
