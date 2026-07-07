@@ -203,6 +203,49 @@ class FamilyOut(FamilyBase):
 
 
 # ---------------------------------------------------------------------------
+# Sources & citations
+# ---------------------------------------------------------------------------
+class SourceBase(BaseModel):
+    title: str | None = None
+    author: str | None = None
+    publisher: str | None = None
+    date: str | None = None
+    notes: str | None = None
+
+
+class SourceCreate(SourceBase):
+    pass
+
+
+class SourceUpdate(SourceBase):
+    pass
+
+
+class SourceOut(SourceBase):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    tree_id: uuid.UUID
+    gedcom_xref: str | None = None
+
+
+class CitationCreate(BaseModel):
+    source_id: uuid.UUID
+    page: str | None = None
+    notes: str | None = None
+
+
+class CitationOut(BaseModel):
+    id: uuid.UUID
+    source_id: uuid.UUID
+    individual_id: uuid.UUID
+    page: str | None = None
+    notes: str | None = None
+    # Denormalized for display without a second fetch.
+    source_title: str | None = None
+
+
+# ---------------------------------------------------------------------------
 # GEDCOM
 # ---------------------------------------------------------------------------
 class ImportSummary(BaseModel):

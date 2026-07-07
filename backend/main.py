@@ -17,6 +17,7 @@ from routers.users import router as users_router
 from routers.individuals import router as individuals_router
 from routers.trees import router as trees_router
 from routers.visualization import router as visualization_router
+from routers.sources import router as sources_router
 from routers.warnings import router as warnings_router
 
 # Ensure all models are imported so create_all sees them.
@@ -118,4 +119,5 @@ app.include_router(gedcom_router)
 app.include_router(visualization_router)
 app.include_router(duplicates_router)
 app.include_router(warnings_router)
+app.include_router(sources_router)
 app.include_router(users_router)

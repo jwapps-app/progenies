@@ -246,6 +246,32 @@ export const api = {
   ancestors: (treeId: string, individualId: string) =>
     request<import("../types").AncestorNode>(`/api/trees/${treeId}/ancestors/${individualId}`),
 
+  // Sources & citations
+  listSources: (treeId: string) =>
+    request<import("../types").Source[]>(`/api/trees/${treeId}/sources`),
+  createSource: (treeId: string, body: Partial<import("../types").Source>) =>
+    request<import("../types").Source>(`/api/trees/${treeId}/sources`, {
+      method: "POST",
+      ...jsonBody(body),
+    }),
+  deleteSource: (treeId: string, id: string) =>
+    request<void>(`/api/trees/${treeId}/sources/${id}`, { method: "DELETE" }),
+  listCitations: (treeId: string, individualId: string) =>
+    request<import("../types").Citation[]>(
+      `/api/trees/${treeId}/individuals/${individualId}/citations`
+    ),
+  createCitation: (
+    treeId: string,
+    individualId: string,
+    body: { source_id: string; page?: string | null; notes?: string | null }
+  ) =>
+    request<import("../types").Citation>(
+      `/api/trees/${treeId}/individuals/${individualId}/citations`,
+      { method: "POST", ...jsonBody(body) }
+    ),
+  deleteCitation: (treeId: string, citationId: string) =>
+    request<void>(`/api/trees/${treeId}/citations/${citationId}`, { method: "DELETE" }),
+
   // GEDCOM
   importGedcom: async (treeId: string, file: File) => {
     const form = new FormData();

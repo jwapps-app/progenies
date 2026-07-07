@@ -126,6 +126,27 @@ export interface AncestorNode {
   children: AncestorNode[];
 }
 
+export interface Source {
+  id: string;
+  tree_id: string;
+  title: string | null;
+  author: string | null;
+  publisher: string | null;
+  date: string | null;
+  notes: string | null;
+  gedcom_xref: string | null;
+}
+
+export interface Citation {
+  id: string;
+  source_id: string;
+  individual_id: string;
+  page: string | null;
+  notes: string | null;
+  /** Denormalized source title for display without a second fetch. */
+  source_title: string | null;
+}
+
 export interface ImportSummary {
   individuals_imported: number;
   families_imported: number;

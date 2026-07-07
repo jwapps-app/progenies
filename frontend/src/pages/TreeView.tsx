@@ -14,6 +14,7 @@ import { exportChartPng } from "../utils/exportImage";
 import { findDuplicates, personSummary } from "../utils/duplicates";
 import { yearOf } from "../utils/gedcomDate";
 import PersonForm, { PersonFields, fieldsToPayload } from "../components/PersonForm";
+import SourcesSection from "../components/tree/SourcesSection";
 import type { AncestorNode, ChildRef, Family, ImportSummary, Individual, TreeNode } from "../types";
 import { displayName } from "../types";
 import {
@@ -1550,6 +1551,16 @@ export default function TreeViewPage() {
                 <p className="italic text-gray-400 dark:text-slate-500">Placeholder (unknown) individual</p>
               )}
             </dl>
+
+            {treeId && (
+              <SourcesSection
+                treeId={treeId}
+                personId={selected.id}
+                canEdit={canEdit}
+                reloadKey={reloadKey}
+                onError={setError}
+              />
+            )}
 
             {(() => {
               const parents = parentsOf(selected.id);
