@@ -15,6 +15,7 @@ import { findDuplicates, personSummary } from "../utils/duplicates";
 import { yearOf } from "../utils/gedcomDate";
 import PersonForm, { PersonFields, fieldsToPayload } from "../components/PersonForm";
 import SourcesSection from "../components/tree/SourcesSection";
+import StatsPanel from "../components/tree/StatsPanel";
 import type { AncestorNode, ChildRef, Family, ImportSummary, Individual, TreeNode } from "../types";
 import { displayName } from "../types";
 import {
@@ -31,6 +32,7 @@ type ModalKind =
   | "addParent"
   | "addDescendant"
   | "editFamily"
+  | "stats"
   | "relate"
   | "warnings"
   | "duplicates"
@@ -1355,6 +1357,15 @@ export default function TreeViewPage() {
               👁 Read-only
             </span>
           )}
+          {individuals.length > 0 && (
+            <button
+              onClick={() => setModal("stats")}
+              title="Tree statistics"
+              className="rounded-lg border border-gray-300 px-2.5 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-100 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-700"
+            >
+              📊
+            </button>
+          )}
           <ThemeToggle />
           {canEdit && (
             <button
@@ -1779,6 +1790,11 @@ export default function TreeViewPage() {
       {modal === "add" && (
         <Modal title="Add person" onClose={() => setModal(null)}>
           <PersonForm submitLabel="Add person" busy={busy} onSubmit={handleCreatePerson} />
+        </Modal>
+      )}
+      {modal === "stats" && (
+        <Modal title={`${treeName || "Tree"} — statistics`} onClose={() => setModal(null)}>
+          <StatsPanel individuals={individuals} families={families} />
         </Modal>
       )}
       {modal === "edit" && selected && (

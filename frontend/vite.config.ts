@@ -55,6 +55,20 @@ export default defineConfig(({ mode, command }) => {
                     networkTimeoutSeconds: 5,
                   },
                 },
+                // Read-only API data: network-first with a cache fallback so an
+                // already-visited tree still DISPLAYS offline (at a cemetery, on
+                // a plane, showing relatives). Mutations are never cached.
+                {
+                  urlPattern: ({ url, request }: { url: URL; request: Request }) =>
+                    request.method === "GET" &&
+                    (url.pathname.startsWith("/api/") || url.pathname.startsWith("/public/")),
+                  handler: "NetworkFirst",
+                  options: {
+                    cacheName: "api-reads",
+                    networkTimeoutSeconds: 8,
+                    expiration: { maxEntries: 300, maxAgeSeconds: 60 * 60 * 24 * 30 },
+                  },
+                },
               ],
             },
           }),
