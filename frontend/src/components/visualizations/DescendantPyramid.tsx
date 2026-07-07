@@ -364,14 +364,23 @@ function layout(node: TreeNode, depth: number): Block {
     const childXs = [...d.band.centers];
     const bc = bandMid(d.band);
     if (d.spouse) {
-      const husbandX = bc - (acrossExt() + SPOUSE_GAP) / 2;
-      const wifeX = bc + (acrossExt() + SPOUSE_GAP) / 2;
-      addPerson(husbandX);
-      boxes.push({ x: wifeX, y, person: d.spouse, isSpouse: true, coupleWith: node.id });
-      links.push({ kind: "marriage", x1: husbandX, x2: wifeX, y, aId: node.id, bId: d.spouse.id, unmarried: d.unmarried, divorced: d.divorced });
+      const leftX = bc - (acrossExt() + SPOUSE_GAP) / 2;
+      const rightX = bc + (acrossExt() + SPOUSE_GAP) / 2;
+      // The man takes the smaller across-coordinate, which renders as the LEFT of
+      // the couple (vertical layout) or the TOP of it (left-to-right layout). Sex
+      // decides the side, not which partner is the bloodline anchor. When sex
+      // doesn't settle it (same sex / unknown), keep the anchor on the left.
+      const spouseLeads = d.spouse.sex === "M" && node.sex !== "M";
+      const nodeX = spouseLeads ? rightX : leftX;
+      const spouseX = spouseLeads ? leftX : rightX;
+      addPerson(nodeX);
+      boxes.push({ x: spouseX, y, person: d.spouse, isSpouse: true, coupleWith: node.id });
+      links.push({ kind: "marriage", x1: leftX, x2: rightX, y, aId: node.id, bId: d.spouse.id, unmarried: d.unmarried, divorced: d.divorced });
       if (childXs.length) links.push({ kind: "family", sourceX: bc, sourceY: y, childXs, childIds: d.childIds, childTopY, dotted: d.gap, aId: node.id, bId: d.spouse.id });
-      placeConverging(d.spouse, wifeX, Math.max(d.band.width, wifeX + acrossExt() / 2));
-      return normalize(boxes, links, husbandX);
+      // The spouse's OTHER marriages fan out past whichever side the spouse is on.
+      if (spouseLeads) placeConverging(d.spouse, spouseX, Math.min(0, spouseX - acrossExt() / 2), -1);
+      else placeConverging(d.spouse, spouseX, Math.max(d.band.width, spouseX + acrossExt() / 2), 1);
+      return normalize(boxes, links, nodeX);
     }
     addPerson(bc);
     if (childXs.length) links.push({ kind: "family", sourceX: bc, sourceY: topY, childXs, childTopY, dotted: d.gap });
