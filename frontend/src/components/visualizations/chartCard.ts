@@ -3,8 +3,11 @@ import * as d3 from "d3";
 // Shared person-card rendering + theme palette, used by both the descendant and
 // ancestor charts so they look identical and stay in sync.
 
-export const NODE_WIDTH = 150;
-export const NODE_HEIGHT = 46;
+// Narrower boxes: the name is stacked over two lines (given + nickname/initials
+// on top, surname below), so the card doesn't need to be wide enough for a
+// whole name on one line. Slightly taller to fit the extra line.
+export const NODE_WIDTH = 116;
+export const NODE_HEIGHT = 54;
 
 /** The fields a card needs — both TreeNode (descendants) and AncestorNode satisfy it. */
 export interface CardPerson {
@@ -66,9 +69,11 @@ function truncate(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;
 }
 
-/** Compact chart label: given name + nickname + middle initial(s) + surname
- * (e.g. 'Robert "Bob" J. Anderson'). */
-export function nodeLabel(p: CardPerson): string {
+/** The two-line card name: given name + nickname + middle initial(s) on the top
+ * line (e.g. 'Robert "Bob" J.'), surname on the bottom line ('Anderson'). When
+ * there is no given name (e.g. an unknown placeholder), the surname — or
+ * "Unknown" — takes the single top line instead. */
+export function nameLines(p: CardPerson): { line1: string; line2: string } {
   const initials = p.middle_name
     ? p.middle_name
         .trim()
@@ -77,13 +82,14 @@ export function nodeLabel(p: CardPerson): string {
         .join(" ")
     : "";
   const nick = p.nickname?.trim();
-  // Display the married surname when set, otherwise the birth surname.
-  const surname = p.married_name || p.surname;
-  const label = [p.given_name, nick ? `"${nick}"` : "", initials, surname]
+  const given = [p.given_name, nick ? `"${nick}"` : "", initials]
     .filter(Boolean)
     .join(" ")
     .trim();
-  return label || "Unknown";
+  // Display the married surname when set, otherwise the birth surname.
+  const surname = (p.married_name || p.surname || "").trim();
+  if (!given) return { line1: surname || "Unknown", line2: "" };
+  return { line1: given, line2: surname };
 }
 
 export function formatLifespan(p: CardPerson): string {
@@ -153,26 +159,49 @@ export function drawCard(
       .attr("stroke-width", 1.5);
   }
 
-  const textX = hasPhoto ? -NODE_WIDTH / 2 + 46 : 0;
+  const textX = hasPhoto ? -NODE_WIDTH / 2 + 44 : 0;
   const anchor = hasPhoto ? "start" : "middle";
+  const nameFill = person.is_unknown ? P.unknownText : P.nodeText;
+  const nameMax = hasPhoto ? 11 : 15;
+  const { line1, line2 } = nameLines(person);
   const lifespan = formatLifespan(person);
 
-  g.append("text")
-    .attr("text-anchor", anchor)
-    .attr("x", textX)
-    .attr("y", lifespan ? -2 : 4)
-    .attr("font-size", 13)
-    .attr("font-weight", 600)
-    .attr("fill", person.is_unknown ? P.unknownText : P.nodeText)
-    .text(truncate(nodeLabel(person), hasPhoto ? 14 : 22));
-
-  if (lifespan) {
-    g.append("text")
+  const name = (text: string, y: number) =>
+    g
+      .append("text")
       .attr("text-anchor", anchor)
       .attr("x", textX)
-      .attr("y", 14)
-      .attr("font-size", 10)
-      .attr("fill", P.muted)
-      .text(lifespan);
+      .attr("y", y)
+      .attr("font-size", 13)
+      .attr("font-weight", 600)
+      .attr("fill", nameFill)
+      .text(truncate(text, nameMax));
+
+  if (line2) {
+    // Two name lines (given over surname), with the lifespan below when present.
+    const y1 = lifespan ? -13 : -5;
+    name(line1, y1);
+    name(line2, y1 + 15);
+    if (lifespan) {
+      g.append("text")
+        .attr("text-anchor", anchor)
+        .attr("x", textX)
+        .attr("y", y1 + 29)
+        .attr("font-size", 10)
+        .attr("fill", P.muted)
+        .text(truncate(lifespan, hasPhoto ? 12 : 18));
+    }
+  } else {
+    // Single name line (no surname): keep it vertically centred.
+    name(line1, lifespan ? -3 : 4);
+    if (lifespan) {
+      g.append("text")
+        .attr("text-anchor", anchor)
+        .attr("x", textX)
+        .attr("y", 12)
+        .attr("font-size", 10)
+        .attr("fill", P.muted)
+        .text(truncate(lifespan, hasPhoto ? 12 : 18));
+    }
   }
 }
