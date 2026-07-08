@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import * as d3 from "d3";
 import type { TreeNode } from "../../types";
-import { NODE_HEIGHT, NODE_WIDTH, drawCard, readPalette } from "./chartCard";
+import { MAX_NODE_WIDTH, cardSize, drawCard, readPalette } from "./chartCard";
 
 export type MagnifyMode = "loupe" | "bulge" | "off";
 
@@ -56,19 +56,23 @@ function computeBloodline(root: TreeNode): Set<string> {
 const SPOUSE_GAP = 18; // gap between a person and an adjacent spouse box
 const SIBLING_GAP = 26; // gap between adjacent sibling subtrees
 const UNION_GAP = 50; // gap between the child-bands of different unions
-const ROW_HEIGHT = NODE_HEIGHT + 96; // distance between generations (vertical layout)
+// Cards autosize (see chartCard.cardSize); layout GEOMETRY (row step, bar
+// positions) uses these fixed allowances so rows and sibling bars stay straight
+// while individual boxes vary within them.
+const MAX_NODE_H = 60; // tallest card (two name lines + lifespan)
+const ROW_HEIGHT = MAX_NODE_H + 90; // distance between generations (vertical layout)
 // Generation spacing for horizontal layout: generations run along screen-x, where a
-// box spans its full WIDTH, so the step must clear NODE_WIDTH (not NODE_HEIGHT).
-const ROW_HEIGHT_H = NODE_WIDTH + 70;
+// box spans its full WIDTH, so the step must clear the WIDEST possible card.
+const ROW_HEIGHT_H = MAX_NODE_WIDTH + 70;
 const genStep = () => (HORIZONTAL ? ROW_HEIGHT_H : ROW_HEIGHT);
-// Box extent along the SIBLING/across axis used by the layout's packing & spouse
-// placement: a box's WIDTH normally, but its HEIGHT in the horizontal layout (where
-// siblings stack vertically). Keeps couples/siblings tightly spaced after the swap.
-const acrossExt = () => (HORIZONTAL ? NODE_HEIGHT : NODE_WIDTH);
-// Box extent along the GENERATION axis (used by connector endpoints that sit at a
-// box's leading/trailing edge toward the next generation): a box's HEIGHT normally,
-// but its WIDTH horizontally (where generations run along screen-x).
-const genExt = () => (HORIZONTAL ? NODE_WIDTH : NODE_HEIGHT);
+// FIXED allowance along the generation axis (bar/rail geometry only — actual
+// box-edge anchors use the per-person genOf()).
+const genExt = () => (HORIZONTAL ? MAX_NODE_WIDTH : MAX_NODE_H);
+// Per-person box extents. Along the SIBLING/across axis (packing, couple
+// spacing): width normally, height in the horizontal layout. Along the
+// GENERATION axis (box-edge link anchors): the opposite.
+const acrossOf = (p: TreeNode) => (HORIZONTAL ? cardSize(p).h : cardSize(p).w);
+const genOf = (p: TreeNode) => (HORIZONTAL ? cardSize(p).w : cardSize(p).h);
 const SIB_BAR_DROP = 26; // height of the sibling bar above the children
 
 // Hover loupe (magnifying glass).
@@ -146,6 +150,9 @@ type Link =
       childXs: number[];
       childIds?: string[]; // child person ids, in the same order as childXs
       childTopY: number;
+      // Per-child TOP edge (boxes autosize, so tops differ); childTopY remains
+      // the row-level geometry line the sibling bar hangs from.
+      childTops?: number[];
       dotted?: boolean; // unknown-depth descendant link
       aId?: string; // the couple's person ids (set when this union has a spouse)
       bId?: string;
@@ -158,6 +165,10 @@ type Link =
       x1: number;
       x2: number;
       y: number;
+      // Across-extents of the boxes at x1/x2 — the line is inset to each box's
+      // actual edge (boxes autosize, so the two insets can differ).
+      ext1?: number;
+      ext2?: number;
       aId?: string;
       bId?: string;
       unmarried?: boolean;
@@ -171,8 +182,16 @@ type Link =
       kind: "comb";
       husbandX: number;
       husbandTopY: number;
+      husbandExt?: number; // husband's generation extent (for centre anchoring)
       barY: number;
-      drops: { x: number; toY: number; wife?: boolean; unmarried?: boolean; divorced?: boolean }[];
+      drops: {
+        x: number;
+        toY: number;
+        ext?: number; // target box's generation extent (wife drops)
+        wife?: boolean;
+        unmarried?: boolean;
+        divorced?: boolean;
+      }[];
     }
   // Marriage between two people who BOTH appear elsewhere in the tree (pedigree
   // collapse): both parents bus down to a shared rail below them, and any of the
@@ -184,8 +203,11 @@ type Link =
       ay: number;
       bx: number;
       by: number;
+      aGen?: number; // generation extents of the two boxes (autosized)
+      bGen?: number;
       childXs: number[];
       childTopY: number;
+      childTops?: number[];
       unmarried?: boolean;
       divorced?: boolean;
       // Parallel-routing lane: overlapping cross-link rails get distinct lanes so
@@ -240,8 +262,8 @@ function normalize(boxes: PlacedBox[], links: Link[], centerX: number): Block {
   let minX = Infinity;
   let maxX = -Infinity;
   for (const box of boxes) {
-    minX = Math.min(minX, box.x - acrossExt() / 2);
-    maxX = Math.max(maxX, box.x + acrossExt() / 2);
+    minX = Math.min(minX, box.x - acrossOf(box.person) / 2);
+    maxX = Math.max(maxX, box.x + acrossOf(box.person) / 2);
   }
   for (const l of links) {
     for (const x of linkXs(l)) {
@@ -277,8 +299,11 @@ function packChildren(children: TreeNode[], depth: number): Band {
 function layout(node: TreeNode, depth: number): Block {
   const row = genStep();
   const y = depth * row;
-  const topY = y - genExt() / 2;
+  const topY = y - genOf(node) / 2; // this box's actual top edge
+  // Row-level geometry line for the next generation (bar placement); each
+  // child's ACTUAL top edge is computed per child (boxes autosize).
   const childTopY = (depth + 1) * row - genExt() / 2;
+  const topsOf = (kids: TreeNode[]) => kids.map((k) => (depth + 1) * row - genOf(k) / 2);
   const unions = node.unions ?? [];
 
   const boxes: PlacedBox[] = [];
@@ -295,8 +320,8 @@ function layout(node: TreeNode, depth: number): Block {
 
   // Leaf person.
   if (unions.length === 0) {
-    addPerson(acrossExt() / 2);
-    return normalize(boxes, links, acrossExt() / 2);
+    addPerson(acrossOf(node) / 2);
+    return normalize(boxes, links, acrossOf(node) / 2);
   }
 
   // Each union's bloodline children (this person's children with that spouse).
@@ -307,6 +332,7 @@ function layout(node: TreeNode, depth: number): Block {
     unmarried: u.unmarried ?? false,
     divorced: u.divorced ?? false,
     childIds: (u.children ?? []).map((c) => c.id),
+    childTops: topsOf(u.children ?? []),
     band: packChildren(u.children ?? [], depth),
   }));
   // A spouse who is also a bloodline descendant (e.g. a half-sibling who marries
@@ -341,17 +367,18 @@ function layout(node: TreeNode, depth: number): Block {
       const childXs = band.centers.map((c) => c + bandLeft);
       // Kids sit BETWEEN this spouse and the other husband (who sits just past
       // them) and drop from the point on THEIR gold marriage line above them.
-      const bandCenter = childXs.length ? bandLeft + bandMid(band) : bandLeft + acrossExt() / 2;
+      const bandCenter = childXs.length ? bandLeft + bandMid(band) : bandLeft;
+      const husbandHalf = acrossOf(u.spouse) / 2;
       const husbandX =
         dir > 0
-          ? bandLeft + band.width + UNION_GAP + acrossExt() / 2
-          : bandLeft - UNION_GAP - acrossExt() / 2;
+          ? bandLeft + band.width + UNION_GAP + husbandHalf
+          : bandLeft - UNION_GAP - husbandHalf;
       boxes.push({ x: husbandX, y, person: u.spouse, isSpouse: true, tag: label, coupleWith: spouse.id });
-      links.push({ kind: "marriage", x1: spouseX, x2: husbandX, y, aId: spouse.id, bId: u.spouse.id, unmarried: u.unmarried, divorced: u.divorced });
+      links.push({ kind: "marriage", x1: spouseX, x2: husbandX, y, ext1: acrossOf(spouse), ext2: acrossOf(u.spouse), aId: spouse.id, bId: u.spouse.id, unmarried: u.unmarried, divorced: u.divorced });
       if (childXs.length) {
-        links.push({ kind: "family", sourceX: bandCenter, sourceY: y, childXs, childTopY, dotted: u.gap, aId: spouse.id, bId: u.spouse.id });
+        links.push({ kind: "family", sourceX: bandCenter, sourceY: y, childXs, childTopY, childTops: topsOf(u.children ?? []), dotted: u.gap, aId: spouse.id, bId: u.spouse.id });
       }
-      edge = dir > 0 ? husbandX + acrossExt() / 2 : husbandX - acrossExt() / 2;
+      edge = dir > 0 ? husbandX + husbandHalf : husbandX - husbandHalf;
     }
     return edge;
   };
@@ -364,8 +391,11 @@ function layout(node: TreeNode, depth: number): Block {
     const childXs = [...d.band.centers];
     const bc = bandMid(d.band);
     if (d.spouse) {
-      const leftX = bc - (acrossExt() + SPOUSE_GAP) / 2;
-      const rightX = bc + (acrossExt() + SPOUSE_GAP) / 2;
+      // Distance between the two box CENTRES: half of each (autosized) box
+      // plus the gap; the couple midpoint stays over the children band.
+      const pairDist = acrossOf(node) / 2 + SPOUSE_GAP + acrossOf(d.spouse) / 2;
+      const leftX = bc - pairDist / 2;
+      const rightX = bc + pairDist / 2;
       // The man takes the smaller across-coordinate, which renders as the LEFT of
       // the couple (vertical layout) or the TOP of it (left-to-right layout). Sex
       // decides the side, not which partner is the bloodline anchor. When sex
@@ -375,11 +405,14 @@ function layout(node: TreeNode, depth: number): Block {
       const spouseX = spouseLeads ? leftX : rightX;
       addPerson(nodeX);
       boxes.push({ x: spouseX, y, person: d.spouse, isSpouse: true, coupleWith: node.id });
-      links.push({ kind: "marriage", x1: leftX, x2: rightX, y, aId: node.id, bId: d.spouse.id, unmarried: d.unmarried, divorced: d.divorced });
-      if (childXs.length) links.push({ kind: "family", sourceX: bc, sourceY: y, childXs, childIds: d.childIds, childTopY, dotted: d.gap, aId: node.id, bId: d.spouse.id });
+      const leftExt = spouseLeads ? acrossOf(d.spouse) : acrossOf(node);
+      const rightExt = spouseLeads ? acrossOf(node) : acrossOf(d.spouse);
+      links.push({ kind: "marriage", x1: leftX, x2: rightX, y, ext1: leftExt, ext2: rightExt, aId: node.id, bId: d.spouse.id, unmarried: d.unmarried, divorced: d.divorced });
+      if (childXs.length) links.push({ kind: "family", sourceX: bc, sourceY: y, childXs, childIds: d.childIds, childTopY, childTops: d.childTops, dotted: d.gap, aId: node.id, bId: d.spouse.id });
       // The spouse's OTHER marriages fan out past whichever side the spouse is on.
-      if (spouseLeads) placeConverging(d.spouse, spouseX, Math.min(0, spouseX - acrossExt() / 2), -1);
-      else placeConverging(d.spouse, spouseX, Math.max(d.band.width, spouseX + acrossExt() / 2), 1);
+      const spouseHalf = acrossOf(d.spouse) / 2;
+      if (spouseLeads) placeConverging(d.spouse, spouseX, Math.min(0, spouseX - spouseHalf), -1);
+      else placeConverging(d.spouse, spouseX, Math.max(d.band.width, spouseX + spouseHalf), 1);
       return normalize(boxes, links, nodeX);
     }
     addPerson(bc);
@@ -393,13 +426,14 @@ function layout(node: TreeNode, depth: number): Block {
   // further wives sit further out with a gold line routed above the boxes (these
   // lines may cross — unavoidable once a husband has 3+ wives).
   addPerson(0);
-  let rightX = acrossExt() / 2;
-  let leftX = -acrossExt() / 2;
+  let rightX = acrossOf(node) / 2;
+  let leftX = -acrossOf(node) / 2;
   let rc = 0;
   let lc = 0;
   const aboveDrops: {
     x: number;
     toY: number;
+    ext?: number;
     wife?: boolean;
     unmarried?: boolean;
     divorced?: boolean;
@@ -412,9 +446,14 @@ function layout(node: TreeNode, depth: number): Block {
     // Lay the children band on this person's side. For the inner union (whose
     // spouse sits adjacent) centre the band under the couple's midpoint so a lone
     // child drops straight down, clamped so it never crosses to the other side.
+    // Centre distance for the adjacent (inner) couple, from the two boxes'
+    // actual sizes.
+    const innerWifeX = d.spouse
+      ? dir * (acrossOf(node) / 2 + SPOUSE_GAP + acrossOf(d.spouse) / 2)
+      : 0;
     let bandLeft: number;
     if (inner && d.spouse && d.band.centers.length) {
-      const coupleMid = goRight ? (acrossExt() + SPOUSE_GAP) / 2 : -(acrossExt() + SPOUSE_GAP) / 2;
+      const coupleMid = innerWifeX / 2;
       const centered = coupleMid - bandMid(d.band);
       bandLeft = goRight ? Math.max(centered, 0) : Math.min(centered, -d.band.width);
     } else {
@@ -422,7 +461,7 @@ function layout(node: TreeNode, depth: number): Block {
     }
     pushShifted(d.band, bandLeft);
     const childXs = d.band.centers.map((c) => c + bandLeft);
-    const bc = childXs.length ? bandLeft + bandMid(d.band) : bandLeft + acrossExt() / 2;
+    const bc = childXs.length ? bandLeft + bandMid(d.band) : bandLeft;
 
     let wifeX: number;
     let outerEdge: number;
@@ -432,27 +471,30 @@ function layout(node: TreeNode, depth: number): Block {
       // link's elbow. (Previously the wife was mirrored out past ALL the children
       // — wifeX = 2*bc — which left a very wide empty gap once a union had several
       // kids, and could overlap the husband for a childless union.)
-      wifeX = goRight ? acrossExt() + SPOUSE_GAP : -(acrossExt() + SPOUSE_GAP);
+      wifeX = innerWifeX;
       const coupleMid = wifeX / 2;
       boxes.push({ x: wifeX, y, person: d.spouse, isSpouse: true, tag: unionTag(d.ordinal, d.unmarried, d.divorced), coupleWith: node.id });
-      links.push({ kind: "marriage", x1: 0, x2: wifeX, y, aId: node.id, bId: d.spouse.id, unmarried: d.unmarried, divorced: d.divorced });
-      if (childXs.length) links.push({ kind: "family", sourceX: coupleMid, sourceY: y, childXs, childIds: d.childIds, childTopY, dotted: d.gap, aId: node.id, bId: d.spouse.id });
+      links.push({ kind: "marriage", x1: 0, x2: wifeX, y, ext1: goRight ? acrossOf(node) : acrossOf(d.spouse), ext2: goRight ? acrossOf(d.spouse) : acrossOf(node), aId: node.id, bId: d.spouse.id, unmarried: d.unmarried, divorced: d.divorced });
+      if (childXs.length) links.push({ kind: "family", sourceX: coupleMid, sourceY: y, childXs, childIds: d.childIds, childTopY, childTops: d.childTops, dotted: d.gap, aId: node.id, bId: d.spouse.id });
     } else if (d.spouse) {
       // Outer wife: gold marriage line routed ABOVE the boxes. She sits just past
       // her children on the outer side; both she and the children hang off the
       // same gold bar — the children dropping from a point between the husband and
       // her — so they read as the COUPLE's children, not attached to the wife
       // alone, and without a big empty gap.
+      const wifeHalf = acrossOf(d.spouse) / 2;
       wifeX = childXs.length
         ? goRight
-          ? bandLeft + d.band.width + SPOUSE_GAP + acrossExt() / 2
-          : bandLeft - SPOUSE_GAP - acrossExt() / 2
-        : bc;
+          ? bandLeft + d.band.width + SPOUSE_GAP + wifeHalf
+          : bandLeft - SPOUSE_GAP - wifeHalf
+        : goRight
+          ? start + SIBLING_GAP + wifeHalf
+          : start - SIBLING_GAP - wifeHalf;
       boxes.push({ x: wifeX, y, person: d.spouse, isSpouse: true, tag: unionTag(d.ordinal, d.unmarried, d.divorced), coupleWith: node.id });
-      aboveDrops.push({ x: wifeX, toY: topY, wife: true, unmarried: d.unmarried, divorced: d.divorced });
+      aboveDrops.push({ x: wifeX, toY: y - genOf(d.spouse) / 2, ext: genOf(d.spouse), wife: true, unmarried: d.unmarried, divorced: d.divorced });
       if (childXs.length) {
         aboveDrops.push({ x: bc, toY: sibY });
-        links.push({ kind: "family", sourceX: bc, sourceY: sibY, childXs, childTopY, dotted: d.gap });
+        links.push({ kind: "family", sourceX: bc, sourceY: sibY, childXs, childTopY, childTops: d.childTops, dotted: d.gap });
       }
     } else {
       // Single-parent union alongside others (e.g. known children PLUS a gap
@@ -464,15 +506,17 @@ function layout(node: TreeNode, depth: number): Block {
         links.push({
           kind: "family",
           sourceX: 0,
-          sourceY: y + genExt() / 2,
+          sourceY: y + genOf(node) / 2,
           childXs,
           childTopY,
+          childTops: d.childTops,
           dotted: d.gap,
         });
     }
+    const wifeEdgeHalf = d.spouse ? acrossOf(d.spouse) / 2 : 0;
     outerEdge = goRight
-      ? Math.max(bandLeft + d.band.width, wifeX + acrossExt() / 2)
-      : Math.min(bandLeft, wifeX - acrossExt() / 2);
+      ? Math.max(bandLeft + d.band.width, wifeX + wifeEdgeHalf)
+      : Math.min(bandLeft, wifeX - wifeEdgeHalf);
     if (d.spouse) outerEdge = placeConverging(d.spouse, wifeX, outerEdge, dir);
     if (goRight) {
       rightX = outerEdge + UNION_GAP;
@@ -483,7 +527,7 @@ function layout(node: TreeNode, depth: number): Block {
     }
   });
   if (aboveDrops.length) {
-    links.push({ kind: "comb", husbandX: 0, husbandTopY: topY, barY: topY - 18, drops: aboveDrops });
+    links.push({ kind: "comb", husbandX: 0, husbandTopY: topY, husbandExt: genOf(node), barY: topY - 18, drops: aboveDrops });
   }
   return normalize(boxes, links, 0);
 }
@@ -596,8 +640,11 @@ export default function DescendantPyramid({
                 ay: a.y,
                 bx: b.x,
                 by: b.y,
+                aGen: genOf(a.person),
+                bGen: genOf(b.person),
                 childXs,
                 childTopY: fam?.childTopY ?? 0,
+                childTops: fam?.childTops,
                 unmarried: l.unmarried,
                 divorced: l.divorced,
               });
@@ -726,7 +773,8 @@ export default function DescendantPyramid({
           // Childless U-turn: ⚭ centred on the rail but lifted clear of the line
           // (same as a normal marriage symbol), so the rail doesn't strike through it.
           // Must match the rail Y in linkPath (just below the HIGHER box).
-          const railY = Math.min(l.ay, l.by) + genExt() / 2 + 18 + lane * 26;
+          const topGen = l.ay <= l.by ? (l.aGen ?? genExt()) : (l.bGen ?? genExt());
+          const railY = Math.min(l.ay, l.by) + topGen / 2 + 18 + lane * 26;
           drawRing((l.ax + l.bx) / 2, railY - 13, l.divorced);
         }
       }
@@ -737,7 +785,7 @@ export default function DescendantPyramid({
     const nodeLayer = g.append("g");
     // Main-tree boxes only (used by the fisheye); graft boxes go in graftNodeEls.
     const nodeEls: { el: d3.Selection<SVGGElement, unknown, null, undefined>; x: number; y: number }[] = [];
-    const graftNodeEls: { x: number; y: number }[] = [];
+    const graftNodeEls: { x: number; y: number; w: number; h: number }[] = [];
     for (const box of block.boxes) {
       const clickable = !box.person.is_unknown;
       const [bx, by] = sw(box.x, box.y);
@@ -751,14 +799,15 @@ export default function DescendantPyramid({
         });
       drawCard(gBox, box.person, P, box.tag);
 
-      // Relationship-path highlight ring.
+      // Relationship-path highlight ring (sized to this card).
       if (highlightIds?.has(box.person.id)) {
+        const cs = cardSize(box.person);
         gBox
           .insert("rect", ":first-child")
-          .attr("x", -NODE_WIDTH / 2 - 4)
-          .attr("y", -NODE_HEIGHT / 2 - 4)
-          .attr("width", NODE_WIDTH + 8)
-          .attr("height", NODE_HEIGHT + 8)
+          .attr("x", -cs.w / 2 - 4)
+          .attr("y", -cs.h / 2 - 4)
+          .attr("width", cs.w + 8)
+          .attr("height", cs.h + 8)
           .attr("rx", 11)
           .attr("fill", "none")
           .attr("stroke", P.marriage)
@@ -772,7 +821,7 @@ export default function DescendantPyramid({
         const coParent = box.coupleWith;
         const plus = gBox
           .append("g")
-          .attr("transform", `translate(0,${NODE_HEIGHT / 2 + 14})`)
+          .attr("transform", `translate(0,${cardSize(box.person).h / 2 + 14})`)
           .style("cursor", "pointer")
           .style("opacity", 0.45)
           .on("mouseenter", function () {
@@ -816,7 +865,7 @@ export default function DescendantPyramid({
       ) {
         const handle = gBox
           .append("g")
-          .attr("transform", `translate(${NODE_WIDTH / 2 - 11},${-NODE_HEIGHT / 2 - 11})`)
+          .attr("transform", `translate(${cardSize(box.person).w / 2 - 11},${-cardSize(box.person).h / 2 - 11})`)
           .style("cursor", "pointer")
           .style("opacity", isExpanded ? 1 : 0.55)
           .on("mouseenter", function () {
@@ -876,7 +925,7 @@ export default function DescendantPyramid({
       // boxes collide with a main-tree box (or an already-placed graft) — so a
       // married-in spouse's family can never land on top of unrelated people.
       const hits = (ax: number, ay: number, ox: number, oy: number) =>
-        Math.abs(ax - ox) < NODE_WIDTH + SIBLING_GAP && Math.abs(ay - oy) < NODE_HEIGHT + 8;
+        Math.abs(ax - ox) < MAX_NODE_WIDTH + SIBLING_GAP && Math.abs(ay - oy) < MAX_NODE_H + 8;
       const collides = (dyTry: number) =>
         graftBoxes.some((gbx) => {
           const ax = gbx.x + dx;
@@ -933,7 +982,8 @@ export default function DescendantPyramid({
             if (clickable) onSelect(b.person.id);
           });
         drawCard(gA, b.person, P, b.tag);
-        graftNodeEls.push({ x: b.x + dx, y: b.y + dy });
+        const bs = cardSize(b.person);
+        graftNodeEls.push({ x: b.x + dx, y: b.y + dy, w: bs.w, h: bs.h });
         placedGraft.push({ x: b.x + dx, y: b.y + dy });
       }
       // When lifted off the spouse, bridge the floating family down to the spouse
@@ -942,12 +992,13 @@ export default function DescendantPyramid({
       // axis-aligned solid lines — never run collinear on top of one.
       if (lift > 0 && graftBoxes.length) {
         const graftCx = graftBoxes.reduce((s, b) => s + b.x + dx, 0) / graftBoxes.length;
-        const endX = box.x + (graftCx >= box.x ? 1 : -1) * (NODE_WIDTH / 2 - 10);
+        const spouseCs = cardSize(box.person);
+        const endX = box.x + (graftCx >= box.x ? 1 : -1) * (spouseCs.w / 2 - 10);
         linkLayer
           .append("path")
           .attr(
             "d",
-            `M${box.x},${box.y - lift - NODE_HEIGHT / 2}L${endX},${box.y - NODE_HEIGHT / 2}`
+            `M${box.x},${box.y - lift - spouseCs.h / 2}L${endX},${box.y - spouseCs.h / 2}`
           )
           .attr("fill", "none")
           .attr("stroke", P.link)
@@ -958,21 +1009,24 @@ export default function DescendantPyramid({
     BLOODLINE = computeBloodline(root);
 
     // Full extent of everything drawn, in SCREEN space (so the axis swap for the
-    // horizontal layout is already applied). Boxes are always NODE_WIDTH×NODE_HEIGHT
-    // on screen; pad for marriage rings / ordinal tags that sit just outside a box.
+    // horizontal layout is already applied). Boxes autosize, so bounds use each
+    // card's real screen size; pad for rings / tags that sit just outside.
     let minX = Infinity;
     let maxX = -Infinity;
     let minY = Infinity;
     let maxY = -Infinity;
-    const accBounds = (lx: number, ly: number) => {
+    const accBounds = (lx: number, ly: number, w: number, h: number) => {
       const [sx, sy] = sw(lx, ly);
-      minX = Math.min(minX, sx - NODE_WIDTH / 2 - 20);
-      maxX = Math.max(maxX, sx + NODE_WIDTH / 2 + 20);
-      minY = Math.min(minY, sy - NODE_HEIGHT - 20);
-      maxY = Math.max(maxY, sy + NODE_HEIGHT + 20);
+      minX = Math.min(minX, sx - w / 2 - 20);
+      maxX = Math.max(maxX, sx + w / 2 + 20);
+      minY = Math.min(minY, sy - h - 20);
+      maxY = Math.max(maxY, sy + h + 20);
     };
-    for (const box of block.boxes) accBounds(box.x, box.y);
-    for (const n of [...nodeEls, ...graftNodeEls]) accBounds(n.x, n.y);
+    for (const box of block.boxes) {
+      const cs = cardSize(box.person);
+      accBounds(box.x, box.y, cs.w, cs.h);
+    }
+    for (const n of graftNodeEls) accBounds(n.x, n.y, n.w, n.h);
     if (!isFinite(minX)) {
       minX = 0;
       maxX = 0;
@@ -1183,10 +1237,9 @@ function linkPath(
     // Map layout space → screen: swap axes for the left-to-right (horizontal) layout.
     return HORIZONTAL ? `${p[1]},${p[0]}` : `${p[0]},${p[1]}`;
   };
-  // Inset along the across axis (trims a marriage line to the spouse boxes' inner
-  // edges): half the box's across-extent — WIDTH vertically, HEIGHT horizontally.
-  const eh = anchorToCenter ? 0 : acrossExt() / 2;
-  const ev = anchorToCenter ? genExt() / 2 : 0; // push a box-top endpoint to its centre
+  // `ev` pushes a box-top endpoint to (approximately) its centre in fisheye
+  // mode; box-edge anchors otherwise come from per-link stored extents.
+  const ev = anchorToCenter ? genExt() / 2 : 0;
   if (l.kind === "family") {
     const sibY = l.childTopY - SIB_BAR_DROP;
     // Extend the sibling bar back to the source x so an off-centre source (a
@@ -1195,12 +1248,22 @@ function linkPath(
     const right = Math.max(l.sourceX, ...l.childXs);
     let d = `M${P(l.sourceX, l.sourceY)}L${P(l.sourceX, sibY)}`;
     if (right > left) d += `M${P(left, sibY)}L${P(right, sibY)}`;
-    for (const cx of l.childXs) d += `M${P(cx, sibY)}L${P(cx, l.childTopY + ev)}`;
+    l.childXs.forEach((cx, i) => {
+      // Each drop ends at that child's ACTUAL top edge (boxes autosize); in
+      // fisheye mode it runs to the row centre so the scaled box covers it.
+      const endY = anchorToCenter ? l.childTopY + ev : l.childTops?.[i] ?? l.childTopY;
+      d += `M${P(cx, sibY)}L${P(cx, endY)}`;
+    });
     return { d, width: 1.5 };
   }
   if (l.kind === "marriage") {
-    const a = Math.min(l.x1, l.x2) + eh;
-    const b = Math.max(l.x1, l.x2) - eh;
+    // Inset each end to ITS box's inner edge (the two boxes can differ in size).
+    const [loX, loExt, hiX, hiExt] =
+      l.x1 <= l.x2
+        ? [l.x1, l.ext1 ?? 0, l.x2, l.ext2 ?? 0]
+        : [l.x2, l.ext2 ?? 0, l.x1, l.ext1 ?? 0];
+    const a = loX + (anchorToCenter ? 0 : loExt / 2);
+    const b = hiX - (anchorToCenter ? 0 : hiExt / 2);
     return { d: `M${P(a, l.y)}L${P(b, l.y)}`, width: 2 };
   }
   if (l.kind === "crosslink") {
@@ -1217,7 +1280,8 @@ function linkPath(
       // channel under the higher partner so its riser never dives through that partner's
       // own children. Each riser enters its box off-centre (never traces the box's
       // centred drop); same-source risers (a person with two far spouses) splay by lane.
-      const railY = Math.min(l.ay, l.by) + genExt() / 2 + 18 + lane * 26;
+      const topGen = l.ay <= l.by ? (l.aGen ?? genExt()) : (l.bGen ?? genExt());
+      const railY = Math.min(l.ay, l.by) + topGen / 2 + 18 + lane * 26;
       const aR = l.ax + (l.ax <= l.bx ? 12 : -12) + lane * 8;
       const bR = l.bx + (l.bx < l.ax ? 14 : -14);
       return {
@@ -1243,7 +1307,10 @@ function linkPath(
     // Blue: children drop from the rail (at the cluster centre), then fan to each.
     let childD = `M${P(cmid, railY)}L${P(cmid, sibY)}`;
     if (cr > cl) childD += `M${P(cl, sibY)}L${P(cr, sibY)}`;
-    for (const cx of l.childXs) childD += `M${P(cx, sibY)}L${P(cx, l.childTopY + ev)}`;
+    l.childXs.forEach((cx, i) => {
+      const endY = anchorToCenter ? l.childTopY + ev : l.childTops?.[i] ?? l.childTopY;
+      childD += `M${P(cx, sibY)}L${P(cx, endY)}`;
+    });
     return { d, width: 2, childD };
   }
   // The husband riser is nudged off the box centre so it runs PARALLEL to (never
@@ -1254,10 +1321,12 @@ function linkPath(
   const right = Math.max(...xs);
   // Gold: husband riser + bar + the drops to WIVES (marriage). Blue (childD): the
   // drops to CHILDREN (family).
-  let d = `M${P(riserX, l.husbandTopY + ev)}L${P(riserX, l.barY)}M${P(left, l.barY)}L${P(right, l.barY)}`;
+  const hEv = anchorToCenter ? (l.husbandExt ?? genExt()) / 2 : 0;
+  let d = `M${P(riserX, l.husbandTopY + hEv)}L${P(riserX, l.barY)}M${P(left, l.barY)}L${P(right, l.barY)}`;
   let childD = "";
   for (const dr of l.drops) {
-    const seg = `M${P(dr.x, l.barY)}L${P(dr.x, dr.toY + (dr.wife ? ev : 0))}`;
+    const dEv = anchorToCenter && dr.wife ? (dr.ext ?? genExt()) / 2 : 0;
+    const seg = `M${P(dr.x, l.barY)}L${P(dr.x, dr.toY + dEv)}`;
     if (dr.wife) d += seg;
     else childD += seg;
   }

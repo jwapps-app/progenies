@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import * as d3 from "d3";
 import type { AncestorNode } from "../../types";
-import { NODE_HEIGHT, NODE_WIDTH, drawCard, readPalette } from "./chartCard";
+import { cardSize, drawCard, readPalette } from "./chartCard";
 
 interface Props {
   root: AncestorNode;
@@ -13,7 +13,8 @@ interface Props {
   highlightIds?: Set<string>;
 }
 
-const ROW_HEIGHT = NODE_HEIGHT + 70; // vertical distance between generations
+const MAX_NODE_H = 60; // tallest autosized card
+const ROW_HEIGHT = MAX_NODE_H + 64; // vertical distance between generations
 const H_GAP = 30; // horizontal gap between adjacent ancestors
 
 /**
@@ -37,7 +38,18 @@ export default function AncestorChart({ root, onSelect, theme, highlightIds }: P
     const P = readPalette(svgEl);
 
     const hierarchy = d3.hierarchy<AncestorNode>(root, (d) => d.children);
-    const layout = d3.tree<AncestorNode>().nodeSize([NODE_WIDTH + H_GAP, ROW_HEIGHT]);
+    // Cards autosize, so sibling spacing comes from a separation function over
+    // the two ACTUAL widths (nodeSize x = 1 makes separation return pixels).
+    const layout = d3
+      .tree<AncestorNode>()
+      .nodeSize([1, ROW_HEIGHT])
+      .separation(
+        (a, b) =>
+          cardSize(a.data).w / 2 +
+          cardSize(b.data).w / 2 +
+          H_GAP +
+          (a.parent === b.parent ? 0 : 14)
+      );
     layout(hierarchy);
     const nodes = hierarchy.descendants();
     // Screen coordinates: x from d3; y grows UPWARD (ancestors above the focus).
@@ -60,14 +72,16 @@ export default function AncestorChart({ root, onSelect, theme, highlightIds }: P
     for (const n of nodes) {
       const parents = n.children ?? [];
       if (!parents.length) continue;
-      const nodeTop = sy(n) - NODE_HEIGHT / 2;
-      const parentBottom = sy(parents[0]) + NODE_HEIGHT / 2;
-      const midY = (nodeTop + parentBottom) / 2;
+      const nodeTop = sy(n) - cardSize(n.data).h / 2;
+      // The fork bar sits midway between this row's tallest possible box top
+      // and the parents' row; each riser then runs to ITS parent's real bottom.
+      const midY = (sy(n) - MAX_NODE_H / 2 + sy(parents[0]) + MAX_NODE_H / 2) / 2;
       const xs = parents.map(sx);
       const left = Math.min(sx(n), ...xs);
       const right = Math.max(sx(n), ...xs);
       let d = `M${sx(n)},${nodeTop}L${sx(n)},${midY}M${left},${midY}L${right},${midY}`;
-      for (const p of parents) d += `M${sx(p)},${midY}L${sx(p)},${parentBottom}`;
+      for (const p of parents)
+        d += `M${sx(p)},${midY}L${sx(p)},${sy(p) + cardSize(p.data).h / 2}`;
       linkLayer
         .append("path")
         .attr("d", d)
@@ -90,12 +104,13 @@ export default function AncestorChart({ root, onSelect, theme, highlightIds }: P
         });
       drawCard(gBox, n.data, P);
       if (highlightIds?.has(n.data.id)) {
+        const cs = cardSize(n.data);
         gBox
           .insert("rect", ":first-child")
-          .attr("x", -NODE_WIDTH / 2 - 4)
-          .attr("y", -NODE_HEIGHT / 2 - 4)
-          .attr("width", NODE_WIDTH + 8)
-          .attr("height", NODE_HEIGHT + 8)
+          .attr("x", -cs.w / 2 - 4)
+          .attr("y", -cs.h / 2 - 4)
+          .attr("width", cs.w + 8)
+          .attr("height", cs.h + 8)
           .attr("rx", 11)
           .attr("fill", "none")
           .attr("stroke", P.marriage)
@@ -109,10 +124,11 @@ export default function AncestorChart({ root, onSelect, theme, highlightIds }: P
     let minY = Infinity;
     let maxY = -Infinity;
     for (const n of nodes) {
-      minX = Math.min(minX, sx(n) - NODE_WIDTH / 2);
-      maxX = Math.max(maxX, sx(n) + NODE_WIDTH / 2);
-      minY = Math.min(minY, sy(n) - NODE_HEIGHT / 2);
-      maxY = Math.max(maxY, sy(n) + NODE_HEIGHT / 2);
+      const cs = cardSize(n.data);
+      minX = Math.min(minX, sx(n) - cs.w / 2);
+      maxX = Math.max(maxX, sx(n) + cs.w / 2);
+      minY = Math.min(minY, sy(n) - cs.h / 2);
+      maxY = Math.max(maxY, sy(n) + cs.h / 2);
     }
     const fitToView = () => {
       const bbox = svgEl.getBoundingClientRect();
