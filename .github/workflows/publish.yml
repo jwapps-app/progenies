@@ -82,7 +82,10 @@ jobs:
           node-version: "20"
       - name: Audit npm dependencies
         working-directory: frontend
-        run: npm audit --audit-level=high
+        # --omit=dev: the app ships a static bundle, so only runtime deps reach
+        # production. Build tooling (vite/esbuild dev-server advisories) never
+        # ships and shouldn't fail the scan.
+        run: npm audit --omit=dev --audit-level=high
 
   images:
     runs-on: ubuntu-latest
