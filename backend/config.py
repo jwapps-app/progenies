@@ -36,6 +36,11 @@ class Settings(BaseSettings):
     # the Cloudflare Tunnel); dev (plain http on the LAN) sets it to false.
     COOKIE_SECURE: bool = True
 
+    # Interactive API docs (/docs, /redoc, /openapi.json). OFF by default so a
+    # production deployment doesn't expose its full schema and a live request
+    # console to the internet; dev (docker-compose.yml) opts in.
+    DOCS_ENABLED: bool = False
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property

@@ -27,15 +27,22 @@ MAX_GENERATIONS = 500
 # Reachable set for the descendant view: from each person follow (a) the
 # children of any family they are a parent of, and (b) their spouses — so a
 # spouse's OTHER children (and their descendants) become reachable, surfacing
-# converging family lines. A path array breaks cycles.
+# converging family lines.
+#
+# UNION (not UNION ALL) deduplicates the working set, so each individual is
+# visited at most once. This both breaks cycles and — critically — avoids the
+# exponential path explosion the old ARRAY[]-path version suffered on dense,
+# highly-convergent trees, where the same nodes were re-traversed along every
+# distinct path. Termination no longer needs a depth cap: once no new ids
+# appear, the recursion stops.
 _REACH_CTE = text(
     """
-    WITH RECURSIVE reach AS (
-        SELECT i.id AS id, ARRAY[i.id] AS path
+    WITH RECURSIVE reach(id) AS (
+        SELECT i.id
         FROM individuals i
         WHERE i.id = :root AND i.tree_id = :tree
-        UNION ALL
-        SELECT nxt.id, r.path || nxt.id
+        UNION
+        SELECT nxt.id
         FROM reach r
         JOIN LATERAL (
             SELECT ch.individual_id AS id
@@ -47,9 +54,8 @@ _REACH_CTE = text(
             FROM families f
             WHERE f.tree_id = :tree AND (f.husband_id = r.id OR f.wife_id = r.id)
         ) nxt ON nxt.id IS NOT NULL
-        WHERE NOT (nxt.id = ANY(r.path)) AND array_length(r.path, 1) < :max_depth
     )
-    SELECT DISTINCT id FROM reach
+    SELECT id FROM reach
     """
 )
 
@@ -125,9 +131,7 @@ def build_descendants(db: Session, tree: FamilyTree, individual_id: uuid.UUID) -
 
     reachable = {
         row.id
-        for row in db.execute(
-            _REACH_CTE, {"root": root.id, "tree": tree.id, "max_depth": MAX_GENERATIONS}
-        ).all()
+        for row in db.execute(_REACH_CTE, {"root": root.id, "tree": tree.id}).all()
     }
     reachable.add(root.id)
 

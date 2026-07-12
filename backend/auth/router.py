@@ -2,8 +2,8 @@
 import time
 import uuid
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Response, status
-from sqlalchemy import func, select
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from auth.deps import get_current_user
@@ -23,13 +23,19 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 REFRESH_COOKIE = "refresh_token"
 
-# Simple in-memory login throttle: after MAX failed attempts for a username
-# within the window, further attempts 429 until it rolls. Per-process (resets
-# on restart) — enough to stop online password guessing on a single-host
-# personal deployment without a new dependency.
+# Simple in-memory login throttle: after MAX failed attempts for a key (the
+# username AND, separately, the source IP) within the window, further attempts
+# 429 until it rolls. Per-process (resets on restart) — enough to stop online
+# password guessing on a single-host personal deployment without a new
+# dependency. Throttling per-IP as well as per-username stops an attacker from
+# spreading a guessing run across many usernames from one host.
 _FAILED_LOGINS: dict[str, list[float]] = {}
 _THROTTLE_WINDOW = 300.0
 _THROTTLE_MAX_FAILURES = 10
+# Bootstrap registration is serialized on this Postgres advisory-lock key so two
+# concurrent first-registrations can't both slip past the "no accounts yet"
+# check and each create an administrator.
+_REGISTER_LOCK_KEY = 0x70726F67  # "prog"
 
 # Verified against when the username doesn't exist, so a miss takes the same
 # time as a wrong password (no username-enumeration timing oracle).
@@ -66,7 +72,7 @@ def _issue_tokens(response: Response, user: User) -> TokenResponse:
     # user's current token_version, so a version bump revokes older tokens.
     _set_refresh_cookie(response, create_refresh_token(subject, user.token_version))
     return TokenResponse(
-        access_token=create_access_token(subject),
+        access_token=create_access_token(subject, user.token_version),
         expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         username=user.username,
         is_admin=user.is_admin,
@@ -85,6 +91,10 @@ def register(payload: UserCreate, db: Session = Depends(get_db)) -> User:
     # Open registration is a bootstrap-only path: it creates the FIRST account
     # (the administrator) and then closes. Further accounts are created by the
     # admin via /api/users.
+    # Serialize concurrent bootstrap registrations (see _REGISTER_LOCK_KEY): the
+    # xact lock is held until this transaction commits/rolls back, so the count
+    # check and insert are atomic against a second concurrent registration.
+    db.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _REGISTER_LOCK_KEY})
     if db.scalar(select(func.count(User.id))) > 0:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -107,9 +117,15 @@ def me(user: User = Depends(get_current_user)) -> User:
 
 
 @router.post("/login", response_model=TokenResponse)
-def login(payload: LoginRequest, response: Response, db: Session = Depends(get_db)) -> TokenResponse:
-    throttle_key = payload.username.strip().lower()
-    if _throttled(throttle_key):
+def login(
+    payload: LoginRequest,
+    response: Response,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> TokenResponse:
+    user_key = f"u:{payload.username.strip().lower()}"
+    ip_key = f"ip:{request.client.host}" if request.client else "ip:unknown"
+    if _throttled(user_key) or _throttled(ip_key):
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Too many failed attempts — try again in a few minutes",
@@ -118,11 +134,13 @@ def login(payload: LoginRequest, response: Response, db: Session = Depends(get_d
     # Always verify against SOME hash so unknown usernames take the same time.
     hashed = user.password_hash if user is not None else _TIMING_PAD_HASH
     if not verify_password(payload.password, hashed) or user is None:
-        _record_failure(throttle_key)
+        _record_failure(user_key)
+        _record_failure(ip_key)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password"
         )
-    _FAILED_LOGINS.pop(throttle_key, None)
+    _FAILED_LOGINS.pop(user_key, None)
+    _FAILED_LOGINS.pop(ip_key, None)
     return _issue_tokens(response, user)
 
 

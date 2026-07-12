@@ -1,7 +1,7 @@
 """Password hashing (bcrypt) and JWT token creation/validation."""
 from datetime import datetime, timedelta, timezone
 
-from jose import JWTError, jwt
+import jwt
 from passlib.context import CryptContext
 
 from config import settings
@@ -21,10 +21,14 @@ def verify_password(plain: str, hashed: str) -> bool:
     return pwd_context.verify(plain, hashed)
 
 
-def create_access_token(subject: str) -> str:
-    """Create a short-lived access token. `subject` is the user id (string)."""
+def create_access_token(subject: str, version: int = 0) -> str:
+    """Create a short-lived access token. `subject` is the user id (string).
+
+    `version` is the user's token_version — embedding it lets us invalidate
+    already-issued ACCESS tokens (not just refresh tokens) the moment that
+    column is bumped, e.g. on a password reset."""
     expire = datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    payload = {"sub": subject, "type": "access", "exp": expire}
+    payload = {"sub": subject, "type": "access", "ver": version, "exp": expire}
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
 
@@ -38,22 +42,31 @@ def create_refresh_token(subject: str, version: int = 0) -> str:
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
 
-def decode_token(token: str, expected_type: str) -> str | None:
-    """Decode a token, validating its type. Returns the subject or None."""
+def decode_access_token(token: str) -> tuple[str, int] | None:
+    """Decode an access token. Returns (subject, version) or None.
+
+    The version is checked against the user's current token_version by the
+    caller so a bumped column invalidates already-issued access tokens."""
     try:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
-    except JWTError:
+    except jwt.PyJWTError:
         return None
-    if payload.get("type") != expected_type:
+    if payload.get("type") != "access":
         return None
-    return payload.get("sub")
+    sub = payload.get("sub")
+    if not sub:
+        return None
+    try:
+        return sub, int(payload.get("ver", 0))
+    except (TypeError, ValueError):
+        return None
 
 
 def decode_refresh_token(token: str) -> tuple[str, int] | None:
     """Decode a refresh token. Returns (subject, version) or None."""
     try:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
-    except JWTError:
+    except jwt.PyJWTError:
         return None
     if payload.get("type") != "refresh":
         return None

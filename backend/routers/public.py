@@ -6,9 +6,10 @@ path, without the admin having to create them an account. Strictly read-only:
 only the data the chart and panel need, no mutation routes, no photos beyond
 what the chart shows, no export.
 """
+import time
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
@@ -16,9 +17,36 @@ from sqlalchemy.orm import Session, selectinload
 from database import get_db
 from models import Family, FamilyTree, Individual
 from routers.visualization import build_ancestors, build_descendants
-from schemas import DescendantNode, FamilyOut, IndividualOut, TreeNode
+from schemas import (
+    DescendantNode,
+    PublicFamilyOut,
+    PublicIndividualOut,
+    TreeNode,
+)
 
 router = APIRouter(prefix="/public/{token}", tags=["public"])
+
+# Per-IP rate limit for the unauthenticated share surface. These routes run
+# recursive tree traversals, so an open loop against them is the cheapest DoS.
+# In-memory sliding window, per-process (resets on restart) — enough for a
+# self-hosted single-host deployment without adding a dependency.
+_PUBLIC_HITS: dict[str, list[float]] = {}
+_RATE_WINDOW = 60.0
+_RATE_MAX = 120  # requests per IP per window
+
+
+def _rate_limit(request: Request) -> None:
+    key = request.client.host if request.client else "unknown"
+    now = time.monotonic()
+    hits = [t for t in _PUBLIC_HITS.get(key, []) if now - t < _RATE_WINDOW]
+    if len(hits) >= _RATE_MAX:
+        _PUBLIC_HITS[key] = hits
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many requests — slow down",
+        )
+    hits.append(now)
+    _PUBLIC_HITS[key] = hits
 
 
 class PublicTreeOut(BaseModel):
@@ -26,7 +54,10 @@ class PublicTreeOut(BaseModel):
     description: str | None = None
 
 
-def get_shared_tree(token: str, db: Session = Depends(get_db)) -> FamilyTree:
+def get_shared_tree(
+    token: str, request: Request, db: Session = Depends(get_db)
+) -> FamilyTree:
+    _rate_limit(request)
     tree = db.scalar(select(FamilyTree).where(FamilyTree.share_token == token))
     if tree is None or tree.is_deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Link not found or revoked")
@@ -38,27 +69,27 @@ def public_tree(tree: FamilyTree = Depends(get_shared_tree)) -> PublicTreeOut:
     return PublicTreeOut(name=tree.name, description=tree.description)
 
 
-@router.get("/individuals", response_model=list[IndividualOut])
+@router.get("/individuals", response_model=list[PublicIndividualOut])
 def public_individuals(
     tree: FamilyTree = Depends(get_shared_tree), db: Session = Depends(get_db)
-) -> list[IndividualOut]:
-    people = db.scalars(
-        select(Individual)
-        .where(Individual.tree_id == tree.id)
-        .order_by(Individual.surname, Individual.given_name)
+) -> list[Individual]:
+    # PublicIndividualOut deliberately drops notes, places, gedcom_xref,
+    # photo_url, timestamps and tree_id — an unauthenticated caller sees only
+    # what the read-only chart renders.
+    return list(
+        db.scalars(
+            select(Individual)
+            .where(Individual.tree_id == tree.id)
+            .order_by(Individual.surname, Individual.given_name)
+        )
     )
-    out = []
-    for p in people:
-        dto = IndividualOut.model_validate(p)
-        dto.photo_url = None  # keep the public list payload small
-        out.append(dto)
-    return out
 
 
-@router.get("/families", response_model=list[FamilyOut])
+@router.get("/families", response_model=list[PublicFamilyOut])
 def public_families(
     tree: FamilyTree = Depends(get_shared_tree), db: Session = Depends(get_db)
 ) -> list[Family]:
+    # PublicFamilyOut drops married/divorced dates+places, notes and gedcom_xref.
     return list(
         db.scalars(
             select(Family)

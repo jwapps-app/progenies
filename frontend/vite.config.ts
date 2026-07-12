@@ -58,10 +58,12 @@ export default defineConfig(({ mode, command }) => {
                 // Read-only API data: network-first with a cache fallback so an
                 // already-visited tree still DISPLAYS offline (at a cemetery, on
                 // a plane, showing relatives). Mutations are never cached.
+                // Deliberately excludes /public/ — an unauthenticated share link
+                // shouldn't leave another family's tree data cached on the
+                // device, and share views are transient.
                 {
                   urlPattern: ({ url, request }: { url: URL; request: Request }) =>
-                    request.method === "GET" &&
-                    (url.pathname.startsWith("/api/") || url.pathname.startsWith("/public/")),
+                    request.method === "GET" && url.pathname.startsWith("/api/"),
                   handler: "NetworkFirst",
                   options: {
                     cacheName: "api-reads",

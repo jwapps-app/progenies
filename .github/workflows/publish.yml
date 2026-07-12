@@ -63,6 +63,27 @@ jobs:
         working-directory: frontend
         run: npx vite build
 
+  # Dependency vulnerability scan. Reports known-vulnerable packages on every
+  # push. Intentionally NOT a dependency of `images`: a fresh upstream advisory
+  # with no available fix should surface here, not block every deploy.
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Audit Python dependencies
+        run: |
+          pip install pip-audit
+          pip-audit -r backend/requirements.txt --desc
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Audit npm dependencies
+        working-directory: frontend
+        run: npm audit --audit-level=high
+
   images:
     runs-on: ubuntu-latest
     needs: [backend-tests, frontend-checks]

@@ -2,7 +2,16 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+def _validate_password_bytes(value: str) -> str:
+    """bcrypt silently ignores everything past the 72th BYTE (not character);
+    a UTF-8 password can be under 72 chars yet over 72 bytes, which would
+    truncate silently. Reject those explicitly so no password is weakened."""
+    if len(value.encode("utf-8")) > 72:
+        raise ValueError("password must be at most 72 bytes")
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -10,8 +19,9 @@ from pydantic import BaseModel, ConfigDict, Field
 # ---------------------------------------------------------------------------
 class UserCreate(BaseModel):
     username: str = Field(min_length=3, max_length=64)
-    # bcrypt silently ignores bytes past 72 — cap so no password is truncated.
     password: str = Field(min_length=8, max_length=72)
+
+    _check_password = field_validator("password")(_validate_password_bytes)
 
 
 class UserOut(BaseModel):
@@ -31,6 +41,8 @@ class RegistrationStatus(BaseModel):
 
 class PasswordReset(BaseModel):
     password: str = Field(min_length=8, max_length=72)
+
+    _check_password = field_validator("password")(_validate_password_bytes)
 
 
 class LoginRequest(BaseModel):
@@ -118,12 +130,26 @@ class IndividualBase(BaseModel):
     gedcom_xref: str | None = None
 
 
+def _validate_photo_url(value: str | None) -> str | None:
+    """Only accept inline image data URIs. The chart renders photo_url as an SVG
+    <image href>, so an arbitrary URL would allow off-site references (tracking,
+    SSRF-ish beacons) or a `javascript:`/`data:text/html` payload. Restricting
+    to data:image/ keeps photos self-contained and inert."""
+    if not value:
+        return value
+    if not value.startswith("data:image/"):
+        raise ValueError("photo_url must be an inline data:image/ URL")
+    return value
+
+
 class IndividualCreate(IndividualBase):
     is_unknown: bool = False
 
+    _check_photo = field_validator("photo_url")(_validate_photo_url)
+
 
 class IndividualUpdate(IndividualBase):
-    pass
+    _check_photo = field_validator("photo_url")(_validate_photo_url)
 
 
 class IndividualOut(IndividualBase):
@@ -201,6 +227,42 @@ class FamilyOut(FamilyBase):
     id: uuid.UUID
     tree_id: uuid.UUID
     gedcom_xref: str | None
+    children: list[ChildOut]
+
+
+# ---------------------------------------------------------------------------
+# Public share link — deliberately SLIM DTOs.
+#
+# The /public/{token} surface is unauthenticated, so it must expose only what
+# the read-only chart renders and NOTHING more. In particular it must never
+# leak free-text `notes`, birth/death `places`, `gedcom_xref`, timestamps, or
+# `tree_id` — the full IndividualOut/FamilyOut carry all of those.
+# ---------------------------------------------------------------------------
+class PublicIndividualOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    given_name: str | None = None
+    middle_name: str | None = None
+    surname: str | None = None
+    married_name: str | None = None
+    nickname: str | None = None
+    sex: str | None = None
+    birth_date: str | None = None
+    death_date: str | None = None
+    age: str | None = None
+    is_unknown: bool
+
+
+class PublicFamilyOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    husband_id: uuid.UUID | None = None
+    wife_id: uuid.UUID | None = None
+    marriage_order: int | None = None
+    gap: bool = False
+    unmarried: bool = False
     children: list[ChildOut]
 
 

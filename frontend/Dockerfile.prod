@@ -12,9 +12,12 @@ ARG VITE_APP_NAME=Progenies
 ENV VITE_APP_NAME=${VITE_APP_NAME}
 RUN npm run build
 
-FROM nginx:alpine
+# nginx-unprivileged runs as a non-root user (uid 101) and listens on 8080 by
+# default — no root, no privileged port.
+FROM nginxinc/nginx-unprivileged:alpine
 
 COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY security-headers.conf /etc/nginx/snippets/security-headers.conf
 COPY --from=build /app/dist /usr/share/nginx/html
 
-EXPOSE 80
+EXPOSE 8080

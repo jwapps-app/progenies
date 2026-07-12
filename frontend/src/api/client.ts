@@ -44,8 +44,15 @@ export class ApiError extends Error {
 
 async function rawRequest(path: string, options: RequestInit): Promise<Response> {
   const headers = new Headers(options.headers);
-  if (accessToken) headers.set("Authorization", `Bearer ${accessToken}`);
-  return fetch(`${BASE_URL}${path}`, { ...options, headers, credentials: "include" });
+  // Public share-link reads are unauthenticated — don't attach the Bearer token
+  // or send the session/refresh cookie to them.
+  const isPublic = path.startsWith("/public/");
+  if (accessToken && !isPublic) headers.set("Authorization", `Bearer ${accessToken}`);
+  return fetch(`${BASE_URL}${path}`, {
+    ...options,
+    headers,
+    credentials: isPublic ? "omit" : "include",
+  });
 }
 
 // Single-flight: concurrent 401s (e.g. three parallel fetches after token

@@ -269,6 +269,58 @@ def test_merge_fills_fields_and_keeps_children(client, admin):
     assert any(len(f["children"]) == 1 for f in fams)
 
 
+def test_public_share_link_omits_sensitive_fields(client, admin):
+    """The unauthenticated /public/{token} surface must expose only what the
+    read-only chart renders — never notes, places, gedcom_xref, or timestamps."""
+    tree = _mk_tree(client, admin, "PublicLeak")
+    r = client.post(
+        f"/api/trees/{tree}/individuals",
+        headers=admin,
+        json={
+            "given_name": "Secret",
+            "surname": "Person",
+            "notes": "PRIVATE NOTE",
+            "birth_place": "Hidden Village",
+            "death_place": "Hidden Town",
+            "gedcom_xref": "@I42@",
+            "photo_url": "data:image/jpeg;base64,QUJD",
+        },
+    )
+    assert r.status_code == 201, r.text
+    person_id = r.json()["id"]
+    fam = client.post(
+        f"/api/trees/{tree}/families",
+        headers=admin,
+        json={
+            "husband_id": person_id,
+            "married_place": "Secret Chapel",
+            "notes": "FAMILY SECRET",
+            "gedcom_xref": "@F7@",
+        },
+    )
+    assert fam.status_code == 201, fam.text
+
+    token = client.post(f"/api/trees/{tree}/share-link", headers=admin).json()["share_token"]
+    assert token
+
+    people = client.get(f"/public/{token}/individuals").json()
+    assert people, "public individuals should be listed"
+    for p in people:
+        for leaked in ("notes", "birth_place", "death_place", "gedcom_xref", "photo_url", "tree_id", "created_at"):
+            assert leaked not in p, f"public individual leaked {leaked}"
+        assert p["given_name"] == "Secret"  # rendered fields still present
+
+    fams = client.get(f"/public/{token}/families").json()
+    assert fams, "public families should be listed"
+    for f in fams:
+        for leaked in ("notes", "married_place", "divorced_date", "married_date", "gedcom_xref", "tree_id"):
+            assert leaked not in f, f"public family leaked {leaked}"
+
+    # Revoking the link closes the door.
+    client.delete(f"/api/trees/{tree}/share-link", headers=admin)
+    assert client.get(f"/public/{token}/individuals").status_code == 404
+
+
 def test_sharing_roles(client, admin):
     tree = _mk_tree(client, admin, "Shared")
     # Admin creates a second account and shares the tree read-only.

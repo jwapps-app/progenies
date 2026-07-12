@@ -5,7 +5,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
-from auth.security import decode_token
+from auth.security import decode_access_token
 from database import get_db
 from models import FamilyTree, TreeShare, User
 
@@ -23,13 +23,14 @@ def get_current_user(
             detail="Not authenticated",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    subject = decode_token(credentials.credentials, expected_type="access")
-    if subject is None:
+    decoded = decode_access_token(credentials.credentials)
+    if decoded is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    subject, version = decoded
     try:
         user_id = uuid.UUID(subject)
     except ValueError:
@@ -38,6 +39,14 @@ def get_current_user(
     user = db.get(User, user_id)
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+    # A bumped token_version (password reset) invalidates already-issued access
+    # tokens, not just refresh tokens.
+    if version != user.token_version:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has been revoked",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     return user
 
 

@@ -27,12 +27,16 @@ async def import_tree(
     tree: FamilyTree = Depends(get_editable_tree),
     db: Session = Depends(get_db),
 ) -> ImportSummary:
+    too_large = HTTPException(
+        status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+        detail=f"File is larger than {MAX_IMPORT_BYTES // (1024 * 1024)} MB",
+    )
+    # Reject on the declared size BEFORE buffering the whole upload into memory.
+    if file.size is not None and file.size > MAX_IMPORT_BYTES:
+        raise too_large
     raw = await file.read()
-    if len(raw) > MAX_IMPORT_BYTES:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"File is larger than {MAX_IMPORT_BYTES // (1024 * 1024)} MB",
-        )
+    if len(raw) > MAX_IMPORT_BYTES:  # backstop if the size wasn't known up front
+        raise too_large
     try:
         content = raw.decode("utf-8-sig")
     except UnicodeDecodeError:

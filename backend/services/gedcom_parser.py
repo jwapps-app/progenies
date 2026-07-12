@@ -32,6 +32,12 @@ class GedNode:
         return node.value if node is not None and node.value != "" else None
 
 
+# Cap warnings so a pathological/adversarial file (e.g. a million malformed
+# lines) can't balloon memory or the import summary. One final line records the
+# suppression.
+MAX_WARNINGS = 100
+
+
 @dataclass
 class GedcomDocument:
     records: list[GedNode]
@@ -39,6 +45,12 @@ class GedcomDocument:
 
     def records_with_tag(self, tag: str) -> list[GedNode]:
         return [r for r in self.records if r.tag == tag]
+
+    def _warn(self, message: str) -> None:
+        if len(self.warnings) < MAX_WARNINGS:
+            self.warnings.append(message)
+        elif len(self.warnings) == MAX_WARNINGS:
+            self.warnings.append("Further warnings suppressed (limit reached)")
 
 
 def _parse_line(line: str) -> tuple[int, str | None, str, str] | None:
@@ -79,12 +91,19 @@ def parse_gedcom(text: str) -> GedcomDocument:
     doc = GedcomDocument(records=[])
     # Stack of (level, node) tracking the current open record path.
     stack: list[GedNode] = []
+    # Continuation text is buffered per-node and joined ONCE at the end. Folding
+    # each CONT/CONC directly into a growing string is O(n²): a NOTE with n
+    # continuation lines rebuilds the whole value n times. Buffering makes it
+    # linear. Keyed by id() (GedNode is unhashable — it holds a list); the nodes
+    # stay alive in the tree for the whole parse, so ids are stable.
+    cont_parts: dict[int, list[str]] = {}
+    cont_nodes: dict[int, GedNode] = {}
 
     for lineno, raw in enumerate(text.splitlines(), start=1):
         parsed = _parse_line(raw)
         if parsed is None:
             if raw.strip():
-                doc.warnings.append(f"Skipped malformed line {lineno}: {raw!r}")
+                doc._warn(f"Skipped malformed line {lineno}: {raw!r}")
             continue
         level, xref, tag, value = parsed
 
@@ -93,7 +112,8 @@ def parse_gedcom(text: str) -> GedcomDocument:
             parent = _node_at_level(stack, level - 1)
             if parent is not None:
                 sep = "\n" if tag == "CONT" else ""
-                parent.value = f"{parent.value}{sep}{value}"
+                cont_parts.setdefault(id(parent), []).append(f"{sep}{value}")
+                cont_nodes[id(parent)] = parent
                 continue
 
         node = GedNode(level=level, tag=tag, xref=xref, value=value)
@@ -104,11 +124,16 @@ def parse_gedcom(text: str) -> GedcomDocument:
         else:
             parent = _node_at_level(stack, level - 1)
             if parent is None:
-                doc.warnings.append(f"Orphaned line {lineno} (no parent at level {level - 1})")
+                doc._warn(f"Orphaned line {lineno} (no parent at level {level - 1})")
                 continue
             parent.children.append(node)
             # Trim stack to this level and push the new node.
             stack = stack[:level] + [node]
+
+    # Apply the buffered continuation text in a single join per node.
+    for nid, parts in cont_parts.items():
+        node = cont_nodes[nid]
+        node.value = f"{node.value}{''.join(parts)}"
     return doc
 
 

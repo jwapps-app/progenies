@@ -98,6 +98,11 @@ app = FastAPI(
     version="1.0.0",
     description="Genealogy & Family Tree PWA",
     lifespan=_lifespan,
+    # Schema + interactive docs are gated: exposed only where DOCS_ENABLED is set
+    # (dev), disabled in production so the API surface isn't published.
+    docs_url="/docs" if settings.DOCS_ENABLED else None,
+    redoc_url="/redoc" if settings.DOCS_ENABLED else None,
+    openapi_url="/openapi.json" if settings.DOCS_ENABLED else None,
 )
 
 app.add_middleware(
@@ -105,8 +110,10 @@ app.add_middleware(
     allow_origins=settings.cors_origins_list,
     allow_origin_regex=settings.CORS_ORIGIN_REGEX or None,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    # Enumerate rather than "*": the app only ever issues these methods/headers,
+    # and a credentialed CORS config should be as narrow as it can be.
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 
