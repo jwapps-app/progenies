@@ -33,10 +33,20 @@ from sqlalchemy.orm import Session
 
 from models import Child, Citation, Family, FamilyTree, GedcomFile, Individual, Source
 from schemas import ImportSummary
-from services.gedcom_parser import GedNode, parse_gedcom
+from services.gedcom_parser import MAX_WARNINGS, GedNode, parse_gedcom
 
 _POINTER = re.compile(r"^@[^@]+@$")
 _RELATIONS = {"biological", "adopted", "step", "foster"}
+
+
+def _warn(warnings: list[str], message: str) -> None:
+    """Same cap as the parser (MAX_WARNINGS): a 25MB adversarial file full of
+    dangling pointers must not balloon the summary into hundreds of thousands
+    of strings. One final line records the suppression."""
+    if len(warnings) < MAX_WARNINGS:
+        warnings.append(message)
+    elif len(warnings) == MAX_WARNINGS:
+        warnings.append("Further warnings suppressed (limit reached)")
 
 
 def _split_name(name_value: str | None) -> tuple[str | None, str | None, str | None]:
@@ -164,7 +174,7 @@ def import_gedcom(db: Session, tree: FamilyTree, content: str, filename: str | N
         if rec.xref is None:
             continue
         if rec.xref in indi_by_xref:
-            warnings.append(f"Duplicate individual xref {rec.xref}; keeping the first record")
+            _warn(warnings, f"Duplicate individual xref {rec.xref}; keeping the first record")
             continue
         # The primary NAME is the first one NOT tagged TYPE married — some files
         # list the married name first, and taking it as the birth name would
@@ -231,7 +241,7 @@ def import_gedcom(db: Session, tree: FamilyTree, content: str, filename: str | N
             src = source_by_xref.get(pointer)
             if src is None:
                 if pointer:
-                    warnings.append(f"Individual {rec.xref}: source {pointer} not found; citation skipped")
+                    _warn(warnings, f"Individual {rec.xref}: source {pointer} not found; citation skipped")
                 continue
             db.add(
                 Citation(
@@ -243,6 +253,12 @@ def import_gedcom(db: Session, tree: FamilyTree, content: str, filename: str | N
                 )
             )
             citations_imported += 1
+
+    # Individuals and sources must reach the database before the families that
+    # reference them: Family carries no ORM relationship to Individual (only
+    # raw husband_id/wife_id columns), so the unit of work does not order those
+    # inserts itself. One extra flush, not a per-record round trip.
+    db.flush()
 
     # ----- Families (FAM) -------------------------------------------------
     unknown_spouses_created = 0
@@ -267,6 +283,10 @@ def import_gedcom(db: Session, tree: FamilyTree, content: str, filename: str | N
             is_unknown=True,
         )
         db.add(placeholder)
+        # Flushed immediately for the same reason as the bulk flush above: the
+        # family row that references this placeholder is inserted without ORM
+        # ordering. Rare path — only files with a missing HUSB/WIFE hit it.
+        db.flush()
         unknown_spouses_created += 1
         return placeholder
 
@@ -274,7 +294,7 @@ def import_gedcom(db: Session, tree: FamilyTree, content: str, filename: str | N
         if rec.xref is None:
             continue
         if rec.xref in seen_fam_xrefs:
-            warnings.append(f"Duplicate family xref {rec.xref}; keeping the first record")
+            _warn(warnings, f"Duplicate family xref {rec.xref}; keeping the first record")
             continue
         seen_fam_xrefs.add(rec.xref)
         husb_ref = rec.value_of("HUSB")
@@ -284,11 +304,11 @@ def import_gedcom(db: Session, tree: FamilyTree, content: str, filename: str | N
         husband = indi_by_xref.get(husb_ref) if husb_ref else None
         wife = indi_by_xref.get(wife_ref) if wife_ref else None
         if husb_ref and husband is None:
-            warnings.append(f"Family {rec.xref}: husband {husb_ref} not found")
+            _warn(warnings, f"Family {rec.xref}: husband {husb_ref} not found")
         if wife_ref and wife is None:
-            warnings.append(f"Family {rec.xref}: wife {wife_ref} not found")
+            _warn(warnings, f"Family {rec.xref}: wife {wife_ref} not found")
         if husband is not None and husband is wife:
-            warnings.append(f"Family {rec.xref}: husband and wife are the same person")
+            _warn(warnings, f"Family {rec.xref}: husband and wife are the same person")
 
         # A family with children needs both parents represented; fill the
         # missing slot with an explicit unknown placeholder individual.
@@ -299,7 +319,7 @@ def import_gedcom(db: Session, tree: FamilyTree, content: str, filename: str | N
                 wife = _unknown_spouse("F", husband)
 
         if husband is None and wife is None and not child_refs:
-            warnings.append(f"Family {rec.xref}: no resolvable members; skipped")
+            _warn(warnings, f"Family {rec.xref}: no resolvable members; skipped")
             continue
 
         married_date, married_place = _event(rec, "MARR")
@@ -331,7 +351,16 @@ def import_gedcom(db: Session, tree: FamilyTree, content: str, filename: str | N
         for order, child_xref in enumerate(child_refs, start=1):
             child_indi = indi_by_xref.get(child_xref)
             if child_indi is None:
-                warnings.append(f"Family {rec.xref}: child {child_xref} not found; skipped")
+                _warn(warnings, f"Family {rec.xref}: child {child_xref} not found; skipped")
+                continue
+            # A person cannot be their own parent: a CHIL that is also this
+            # family's HUSB or WIFE would create a self-loop every tree
+            # traversal then has to defend against.
+            if child_xref in (husb_ref, wife_ref):
+                _warn(
+                    warnings,
+                    f"Family {rec.xref}: child {child_xref} is also a parent of this family; skipped",
+                )
                 continue
             relation = relation_by_link.get((child_xref, rec.xref), "biological")
             db.add(

@@ -1,5 +1,6 @@
 """FastAPI dependencies for authentication and resource ownership."""
 import uuid
+from typing import TypeVar
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -10,6 +11,28 @@ from database import get_db
 from models import FamilyTree, TreeShare, User
 
 bearer_scheme = HTTPBearer(auto_error=False)
+
+_TreeScoped = TypeVar("_TreeScoped")
+
+
+def require_in_tree(
+    db: Session,
+    tree: FamilyTree,
+    model: type[_TreeScoped],
+    record_id: uuid.UUID,
+    *,
+    status_code: int = status.HTTP_404_NOT_FOUND,
+    detail: str | None = None,
+) -> _TreeScoped:
+    """Fetch a record by primary key and require that it belongs to the given
+    tree — the shared "scoped or 404" check behind every per-tree sub-resource.
+    Callers that treat a bad reference as a validation error pass 422."""
+    obj = db.get(model, record_id)
+    if obj is None or obj.tree_id != tree.id:
+        raise HTTPException(
+            status_code=status_code, detail=detail or f"{model.__name__} not found"
+        )
+    return obj
 
 
 def get_current_user(

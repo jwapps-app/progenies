@@ -1,18 +1,18 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import { api } from "../api/client";
 import DescendantPyramid from "../components/visualizations/DescendantPyramid";
 import AncestorChart from "../components/visualizations/AncestorChart";
 import ThemeToggle from "../components/ui/ThemeToggle";
 import { useTheme } from "../store/theme";
-import type { AncestorNode, Family, Individual, TreeNode } from "../types";
+import type { AncestorNode, PublicFamily, PublicIndividual, TreeNode } from "../types";
 import { displayName } from "../types";
 import { APP_NAME } from "../branding";
 
 /** Pick the person whose descendant view covers the most of the tree: someone
  * with children who is nobody's child (a top ancestor). Mirrors TreeView's
  * defaultRoot without importing the whole page. */
-function defaultRoot(individuals: Individual[], families: Family[]): string | null {
+function defaultRoot(individuals: PublicIndividual[], families: PublicFamily[]): string | null {
   if (individuals.length === 0) return null;
   const isChild = new Set(families.flatMap((f) => f.children.map((c) => c.individual_id)));
   const parents = new Set(
@@ -31,7 +31,7 @@ export default function PublicTreePage() {
   const { token } = useParams<{ token: string }>();
   const theme = useTheme((s) => s.theme);
   const [treeName, setTreeName] = useState<string>("");
-  const [individuals, setIndividuals] = useState<Individual[]>([]);
+  const [individuals, setIndividuals] = useState<PublicIndividual[]>([]);
   const [rootId, setRootId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<"descendants" | "ancestors">("descendants");
   const [treeData, setTreeData] = useState<TreeNode | null>(null);
@@ -88,7 +88,9 @@ export default function PublicTreePage() {
     [individuals]
   );
 
-  const onSelect = (id: string) => setRootId(id);
+  // Stable identity — this sits in the chart effects' dependency arrays, so a
+  // fresh function each render would tear down and redraw the whole SVG.
+  const onSelect = useCallback((id: string) => setRootId(id), []);
 
   return (
     <div className="flex h-full flex-col">

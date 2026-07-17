@@ -48,16 +48,21 @@ export function exportChartPng(svg: SVGSVGElement, filename: string, bg: string)
     clone.insertBefore(bgRect, cloneG);
 
     const xml = new XMLSerializer().serializeToString(clone);
-    const dataUrl = `data:image/svg+xml;base64,${btoa(
-      String.fromCharCode(...new TextEncoder().encode(xml))
-    )}`;
+    // A Blob object URL, not a base64 data URL — the btoa route spread the whole
+    // serialized SVG as call arguments, and engines cap spread length (~65k), so
+    // large trees threw RangeError before the pixel guard even ran.
+    const svgUrl = URL.createObjectURL(new Blob([xml], { type: "image/svg+xml;charset=utf-8" }));
 
     // 2× for crispness, scaled down when the tree is so large that would blow
     // past the canvas pixel budget.
     const scale = Math.min(2, Math.sqrt(MAX_PIXELS / (w * h)));
     const img = new Image();
-    img.onerror = () => reject(new Error("Could not render the chart image"));
+    img.onerror = () => {
+      URL.revokeObjectURL(svgUrl);
+      reject(new Error("Could not render the chart image"));
+    };
     img.onload = () => {
+      URL.revokeObjectURL(svgUrl);
       const canvas = document.createElement("canvas");
       canvas.width = Math.round(w * scale);
       canvas.height = Math.round(h * scale);
@@ -82,6 +87,6 @@ export function exportChartPng(svg: SVGSVGElement, filename: string, bg: string)
         resolve();
       }, "image/png");
     };
-    img.src = dataUrl;
+    img.src = svgUrl;
   });
 }

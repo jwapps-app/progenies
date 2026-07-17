@@ -34,7 +34,7 @@ export function setAuthLostHandler(handler: () => void): void {
   onAuthLost = handler;
 }
 
-export class ApiError extends Error {
+class ApiError extends Error {
   status: number;
   constructor(status: number, message: string) {
     super(message);
@@ -185,9 +185,9 @@ export const api = {
   publicTree: (token: string) =>
     request<{ name: string; description: string | null }>(`/public/${token}/tree`),
   publicIndividuals: (token: string) =>
-    request<import("../types").Individual[]>(`/public/${token}/individuals`),
+    request<import("../types").PublicIndividual[]>(`/public/${token}/individuals`),
   publicFamilies: (token: string) =>
-    request<import("../types").Family[]>(`/public/${token}/families`),
+    request<import("../types").PublicFamily[]>(`/public/${token}/families`),
   publicDescendants: (token: string, individualId: string) =>
     request<import("../types").TreeNode>(`/public/${token}/descendants/${individualId}`),
   publicAncestors: (token: string, individualId: string) =>
@@ -308,5 +308,3 @@ export const api = {
   // navigation carries no Authorization header and 401s.
   exportGedcom: (treeId: string) => request<string>(`/api/trees/${treeId}/export`),
 };
-
-export { BASE_URL };

@@ -321,6 +321,103 @@ def test_public_share_link_omits_sensitive_fields(client, admin):
     assert client.get(f"/public/{token}/individuals").status_code == 404
 
 
+def test_visualization_two_marriages(client, admin):
+    """Descendant chart: a person with two marriages shows both unions with
+    correct ordinals and children; ancestor chart returns both parents."""
+    tree = _mk_tree(client, admin, "Viz")
+
+    def mk(name):
+        r = client.post(f"/api/trees/{tree}/individuals", headers=admin, json={"given_name": name})
+        assert r.status_code == 201, r.text
+        return r.json()["id"]
+
+    dad, wife1, wife2, kid1, kid2, other = (
+        mk(n) for n in ("Dad", "WifeOne", "WifeTwo", "KidOne", "KidTwo", "Other")
+    )
+    for wife, kid, order in ((wife1, kid1, 1), (wife2, kid2, 2)):
+        r = client.post(
+            f"/api/trees/{tree}/families",
+            headers=admin,
+            json={
+                "husband_id": dad,
+                "wife_id": wife,
+                "marriage_order": order,
+                "children": [{"individual_id": kid, "birth_order": 1}],
+            },
+        )
+        assert r.status_code == 201, r.text
+    # WifeOne remarried: her SECOND marriage must keep ordinal 2 in the chart
+    # even though her first marriage is the union she is rendered under.
+    r = client.post(
+        f"/api/trees/{tree}/families",
+        headers=admin,
+        json={"husband_id": other, "wife_id": wife1, "marriage_order": 2},
+    )
+    assert r.status_code == 201, r.text
+
+    r = client.get(f"/api/trees/{tree}/descendants/{dad}", headers=admin)
+    assert r.status_code == 200, r.text
+    root = r.json()
+    assert root["id"] == dad
+    assert [u["ordinal"] for u in root["unions"]] == [1, 2]
+    assert root["unions"][0]["spouse"]["id"] == wife1
+    assert root["unions"][1]["spouse"]["id"] == wife2
+    assert [c["id"] for c in root["unions"][0]["children"]] == [kid1]
+    assert [c["id"] for c in root["unions"][1]["children"]] == [kid2]
+    remarriage = root["unions"][0]["spouse"]["unions"]
+    assert [u["ordinal"] for u in remarriage] == [2]
+    assert remarriage[0]["spouse"]["id"] == other
+
+    r = client.get(f"/api/trees/{tree}/ancestors/{kid1}", headers=admin)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["id"] == kid1
+    assert {p["id"] for p in body["children"]} == {dad, wife1}
+
+
+def test_family_rejects_child_who_is_a_parent(client, admin):
+    """A person cannot be recorded as their own parent."""
+    tree = _mk_tree(client, admin, "SelfParent")
+    r = client.post(f"/api/trees/{tree}/individuals", headers=admin, json={"given_name": "Dad"})
+    dad = r.json()["id"]
+    r = client.post(
+        f"/api/trees/{tree}/families",
+        headers=admin,
+        json={"husband_id": dad, "children": [{"individual_id": dad}]},
+    )
+    assert r.status_code == 422, r.text
+
+
+def test_refresh_and_password_reset_revocation(client, admin):
+    """Login → refresh works; an admin password reset kills BOTH the old
+    access token and the old refresh cookie."""
+    r = client.post("/api/users", headers=admin, json={"username": "cycle", "password": "password123"})
+    assert r.status_code == 201, r.text
+    uid = r.json()["id"]
+
+    login = client.post("/auth/login", json={"username": "cycle", "password": "password123"})
+    assert login.status_code == 200, login.text
+    access = login.json()["access_token"]
+    old_refresh = client.cookies.get("refresh_token")
+    assert old_refresh
+    headers = {"Authorization": f"Bearer {access}"}
+    assert client.get("/auth/me", headers=headers).status_code == 200
+
+    # Refresh (cookie sent from the client jar) returns a fresh, working token.
+    r = client.post("/auth/refresh")
+    assert r.status_code == 200, r.text
+    fresh = r.json()["access_token"]
+    assert client.get("/auth/me", headers={"Authorization": f"Bearer {fresh}"}).status_code == 200
+
+    # Password reset bumps token_version → every outstanding token is revoked.
+    r = client.post(f"/api/users/{uid}/password", headers=admin, json={"password": "password456"})
+    assert r.status_code == 204, r.text
+    assert client.get("/auth/me", headers=headers).status_code == 401
+    assert client.get("/auth/me", headers={"Authorization": f"Bearer {fresh}"}).status_code == 401
+    client.cookies.set("refresh_token", old_refresh, domain="testserver", path="/auth")
+    assert client.post("/auth/refresh").status_code == 401
+
+
 def test_sharing_roles(client, admin):
     tree = _mk_tree(client, admin, "Shared")
     # Admin creates a second account and shares the tree read-only.

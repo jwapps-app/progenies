@@ -34,10 +34,14 @@ export default function SourcesSection({
     api
       .listCitations(treeId, personId)
       .then((c) => !cancelled && setCitations(c))
-      .catch(() => {});
+      .catch(
+        (err) =>
+          !cancelled && onError(err instanceof Error ? err.message : "Failed to load citations")
+      );
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [treeId, personId, reloadKey]);
 
   // Sources are only needed once the add form opens.
@@ -47,10 +51,14 @@ export default function SourcesSection({
     api
       .listSources(treeId)
       .then((s) => !cancelled && setSources(s))
-      .catch(() => {});
+      .catch(
+        (err) =>
+          !cancelled && onError(err instanceof Error ? err.message : "Failed to load sources")
+      );
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [treeId, adding]);
 
   async function handleAdd(e: FormEvent) {

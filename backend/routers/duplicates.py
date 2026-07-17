@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from auth.deps import get_accessible_tree, get_editable_tree
+from auth.deps import get_accessible_tree, get_editable_tree, require_in_tree
 from database import get_db
 from models import DismissedDuplicate, FamilyTree, Individual
 from schemas import DismissedPairOut, DuplicatePairRequest
@@ -19,12 +19,14 @@ def _sorted_pair(a: uuid.UUID, b: uuid.UUID) -> tuple[uuid.UUID, uuid.UUID]:
 
 
 def _require_member(db: Session, tree: FamilyTree, iid: uuid.UUID) -> None:
-    indi = db.get(Individual, iid)
-    if indi is None or indi.tree_id != tree.id:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Individual {iid} not found in this tree",
-        )
+    require_in_tree(
+        db,
+        tree,
+        Individual,
+        iid,
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail=f"Individual {iid} not found in this tree",
+    )
 
 
 @router.get("/dismissed", response_model=list[DismissedPairOut])

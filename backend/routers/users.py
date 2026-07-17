@@ -23,12 +23,15 @@ router = APIRouter(prefix="/api/users", tags=["users"])
 @router.get("/directory", response_model=list[UserDirectoryOut])
 def user_directory(
     user: User = Depends(get_current_user), db: Session = Depends(get_db)
-) -> list[User]:
+) -> list[UserDirectoryOut]:
     """Every other account's id + username, for the tree-sharing picker. Any
-    authenticated user may read this (it exposes no admin flags or timestamps)."""
-    return list(
-        db.scalars(select(User).where(User.id != user.id).order_by(User.username))
-    )
+    authenticated user may read this (it exposes no admin flags or timestamps).
+    Only the two exposed columns are selected — full rows would pull every
+    password hash out of the database for a routine directory fetch."""
+    rows = db.execute(
+        select(User.id, User.username).where(User.id != user.id).order_by(User.username)
+    ).all()
+    return [UserDirectoryOut(id=row.id, username=row.username) for row in rows]
 
 
 def _require_user(db: Session, user_id: uuid.UUID) -> User:

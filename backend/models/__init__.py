@@ -41,8 +41,13 @@ class User(Base):
     token_version: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+    # passive_deletes on every delete-orphan relationship: the child FK already
+    # declares ON DELETE CASCADE, so the database removes dependents in one
+    # statement. Without it, deleting a user made the ORM SELECT the entire
+    # dataset (trees, individuals, families, children, sources, citations) and
+    # delete it row-by-row.
     trees: Mapped[list["FamilyTree"]] = relationship(
-        back_populates="user", cascade="all, delete-orphan"
+        back_populates="user", cascade="all, delete-orphan", passive_deletes=True
     )
 
 
@@ -65,16 +70,16 @@ class FamilyTree(Base):
 
     user: Mapped["User"] = relationship(back_populates="trees")
     individuals: Mapped[list["Individual"]] = relationship(
-        back_populates="tree", cascade="all, delete-orphan"
+        back_populates="tree", cascade="all, delete-orphan", passive_deletes=True
     )
     families: Mapped[list["Family"]] = relationship(
-        back_populates="tree", cascade="all, delete-orphan"
+        back_populates="tree", cascade="all, delete-orphan", passive_deletes=True
     )
     sources: Mapped[list["Source"]] = relationship(
-        back_populates="tree", cascade="all, delete-orphan"
+        back_populates="tree", cascade="all, delete-orphan", passive_deletes=True
     )
     shares: Mapped[list["TreeShare"]] = relationship(
-        back_populates="tree", cascade="all, delete-orphan"
+        back_populates="tree", cascade="all, delete-orphan", passive_deletes=True
     )
 
 
@@ -144,7 +149,7 @@ class Individual(Base):
 
     tree: Mapped["FamilyTree"] = relationship(back_populates="individuals")
     citations: Mapped[list["Citation"]] = relationship(
-        back_populates="individual", cascade="all, delete-orphan"
+        back_populates="individual", cascade="all, delete-orphan", passive_deletes=True
     )
 
     __table_args__ = (
@@ -182,10 +187,8 @@ class Family(Base):
     gedcom_xref: Mapped[str | None] = mapped_column(Text, index=True)
 
     tree: Mapped["FamilyTree"] = relationship(back_populates="families")
-    husband: Mapped["Individual"] = relationship(foreign_keys=[husband_id])
-    wife: Mapped["Individual"] = relationship(foreign_keys=[wife_id])
     children: Mapped[list["Child"]] = relationship(
-        back_populates="family", cascade="all, delete-orphan"
+        back_populates="family", cascade="all, delete-orphan", passive_deletes=True
     )
 
 
@@ -222,7 +225,7 @@ class Source(Base):
 
     tree: Mapped["FamilyTree"] = relationship(back_populates="sources")
     citations: Mapped[list["Citation"]] = relationship(
-        back_populates="source", cascade="all, delete-orphan"
+        back_populates="source", cascade="all, delete-orphan", passive_deletes=True
     )
 
 

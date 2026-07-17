@@ -5,17 +5,20 @@ import * as d3 from "d3";
 
 // Cards AUTOSIZE to their content (measured text + optional photo), clamped
 // between MIN and MAX so a bare first name gets a small box and a novel-length
-// name can't blow the layout apart. NODE_WIDTH/NODE_HEIGHT remain the typical
-// card size, used only as layout spacing baselines (row step, gaps).
-export const NODE_WIDTH = 116;
-export const NODE_HEIGHT = 54;
-export const MIN_NODE_WIDTH = 72;
+// name can't blow the layout apart.
+const MIN_NODE_WIDTH = 72;
 export const MAX_NODE_WIDTH = 176;
+// Tallest autosized card (two name lines + lifespan). Both charts derive their
+// generation spacing from this, and cardSize()'s height cap below is this same
+// constant — one export keeps them agreeing by construction instead of by
+// coincidence.
+export const MAX_NODE_H = 60;
 
 const PAD_X = 9; // horizontal padding inside the card, each side
 const PHOTO_SPACE = 40; // photo circle + gap, when a thumbnail is present
 const NAME_FONT = "600 13px ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif";
 const LIFE_FONT = "10px ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif";
+const BADGE_FONT = "700 9px ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif";
 
 export interface CardSize {
   w: number;
@@ -47,15 +50,22 @@ function fitText(text: string, font: string, maxW: number): string {
   return `${text.slice(0, lo)}…`;
 }
 
-// Sizes are stable for a given data object; the WeakMap makes repeated lookups
-// (layout passes + draw) free and evaporates with the data on refetch.
-const sizeCache = new WeakMap<CardPerson, CardSize>();
+/** Size plus the fitted (ellipsized) display strings — both deterministic for a
+ * given data object, so they're cached together. */
+interface CardMetrics extends CardSize {
+  line1: string;
+  line2: string;
+  lifespan: string;
+}
 
-/** The card's rendered size for this person: measured text width (widest of
- * the name lines and the lifespan) plus padding and photo space, clamped to
- * [MIN_NODE_WIDTH, MAX_NODE_WIDTH]; height from how many lines the card shows. */
-export function cardSize(p: CardPerson): CardSize {
-  const cached = sizeCache.get(p);
+// Metrics are stable for a given data object; the WeakMap makes repeated
+// lookups (layout passes + draw) free and evaporates with the data on refetch.
+// Caching the FITTED strings too means drawCard never re-runs the measureText
+// binary search on a rebuild — the size already fixed what fits.
+const metricsCache = new WeakMap<CardPerson, CardMetrics>();
+
+function cardMetrics(p: CardPerson): CardMetrics {
+  const cached = metricsCache.get(p);
   if (cached) return cached;
   const { line1, line2 } = nameLines(p);
   const lifespan = formatLifespan(p);
@@ -71,11 +81,25 @@ export function cardSize(p: CardPerson): CardSize {
     Math.min(MAX_NODE_WIDTH, Math.max(MIN_NODE_WIDTH, textW + PAD_X * 2 + photoW + 1))
   );
   const lines = 1 + (line2 ? 1 : 0) + (lifespan ? 1 : 0);
-  let h = lines === 1 ? 34 : lines === 2 ? 48 : 60;
+  let h = lines === 1 ? 34 : lines === 2 ? 48 : MAX_NODE_H;
   if (p.photo_url) h = Math.max(h, 46); // the 17px-radius photo circle needs room
-  const size = { w, h };
-  sizeCache.set(p, size);
-  return size;
+  const maxTextW = w - PAD_X * 2 - photoW;
+  const metrics: CardMetrics = {
+    w,
+    h,
+    line1: fitText(line1, NAME_FONT, maxTextW),
+    line2: line2 ? fitText(line2, NAME_FONT, maxTextW) : "",
+    lifespan: lifespan ? fitText(lifespan, LIFE_FONT, maxTextW) : "",
+  };
+  metricsCache.set(p, metrics);
+  return metrics;
+}
+
+/** The card's rendered size for this person: measured text width (widest of
+ * the name lines and the lifespan) plus padding and photo space, clamped to
+ * [MIN_NODE_WIDTH, MAX_NODE_WIDTH]; height from how many lines the card shows. */
+export function cardSize(p: CardPerson): CardSize {
+  return cardMetrics(p);
 }
 
 /** The fields a card needs — both TreeNode (descendants) and AncestorNode satisfy it. */
@@ -177,7 +201,7 @@ export function drawCard(
   tag?: string
 ) {
   const sexColor = person.sex === "M" ? P.borderM : person.sex === "F" ? P.borderF : P.borderU;
-  const { w, h } = cardSize(person);
+  const { w, h, line1, line2, lifespan } = cardMetrics(person);
 
   g.append("rect")
     .attr("x", -w / 2)
@@ -191,7 +215,9 @@ export function drawCard(
     .attr("stroke-dasharray", person.is_unknown ? "4 3" : "none");
 
   if (tag) {
-    const tw = tag.length * 6 + 10;
+    // Real measurement, not a per-character estimate — long tags (e.g.
+    // "m. Wilhelmina") must not overflow the badge rect.
+    const tw = Math.ceil(textWidth(tag, BADGE_FONT)) + 10;
     const bx = -w / 2 + 6;
     const by = -h / 2 - 8;
     g.append("rect").attr("x", bx).attr("y", by).attr("width", tw).attr("height", 16).attr("rx", 8).attr("fill", P.marriage);
@@ -233,10 +259,8 @@ export function drawCard(
   const textX = hasPhoto ? -w / 2 + PHOTO_SPACE : 0;
   const anchor = hasPhoto ? "start" : "middle";
   const nameFill = person.is_unknown ? P.unknownText : P.nodeText;
-  // Available width for text — measured fit, not a character count.
-  const maxTextW = w - PAD_X * 2 - (hasPhoto ? PHOTO_SPACE : 0);
-  const { line1, line2 } = nameLines(person);
-  const lifespan = formatLifespan(person);
+  // line1/line2/lifespan are already ellipsized to the card width (cached with
+  // the size in cardMetrics — they're deterministic per person).
 
   const name = (text: string, y: number) =>
     g
@@ -247,7 +271,7 @@ export function drawCard(
       .attr("font-size", 13)
       .attr("font-weight", 600)
       .attr("fill", nameFill)
-      .text(fitText(text, NAME_FONT, maxTextW));
+      .text(text);
 
   const life = (y: number) =>
     g
@@ -257,7 +281,7 @@ export function drawCard(
       .attr("y", y)
       .attr("font-size", 10)
       .attr("fill", P.muted)
-      .text(fitText(lifespan, LIFE_FONT, maxTextW));
+      .text(lifespan);
 
   if (line2) {
     // Two name lines (given over surname), with the lifespan below when present.
@@ -270,4 +294,132 @@ export function drawCard(
     name(line1, lifespan ? -3 : 4);
     if (lifespan) life(12);
   }
+}
+
+/** Gold ring around a card, marking it as part of the highlighted relationship
+ * path. Inserted UNDER the card's own rect and tagged with a class so the
+ * charts' highlight-only effect can clear and redraw rings without a full
+ * re-layout. */
+export function drawHighlightRing(
+  g: d3.Selection<SVGGElement, unknown, null, undefined>,
+  size: CardSize,
+  P: Palette
+) {
+  g.insert("rect", ":first-child")
+    .attr("class", "highlight-ring")
+    .attr("x", -size.w / 2 - 4)
+    .attr("y", -size.h / 2 - 4)
+    .attr("width", size.w + 8)
+    .attr("height", size.h + 8)
+    .attr("rx", 11)
+    .attr("fill", "none")
+    .attr("stroke", P.marriage)
+    .attr("stroke-width", 3);
+}
+
+/** Extent of everything a chart drew, in the coordinate space of the group the
+ * zoom transform is applied to. */
+export interface ChartBounds {
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+}
+
+/** Shared pan/zoom + fit-to-view wiring for a chart's <svg>, identical for both
+ * charts:
+ *
+ * - Creates the zoom behavior (each transform lands on `zoomTarget` and is
+ *   remembered in `savedTransform`).
+ * - Same `key` as the previous draw → this is a redraw for an edit/theme
+ *   change: RESTORES the user's pan/zoom instead of yanking them back to the
+ *   whole-chart fit. A new key fits `bounds` into the viewport.
+ * - A ResizeObserver re-fits (rAF-debounced) when the available space changes
+ *   (e.g. a detail panel docks/undocks, or the window resizes). Its initial
+ *   synchronous fire on observe() is skipped — it would override the transform
+ *   just applied.
+ *
+ * The caller's effect MUST invoke the returned `cleanup`.
+ */
+export function setupChartViewport(opts: {
+  svgEl: SVGSVGElement;
+  /** Group the pan/zoom transform is written to. */
+  zoomTarget: d3.Selection<SVGGElement, unknown, null, undefined>;
+  bounds: ChartBounds;
+  /** Vertical placement when fitting: "top" pins the top edge under the margin
+   * (descendant pyramid — the root hugs the top), "center" centres vertically
+   * (ancestor chart). */
+  fitAnchor: "top" | "center";
+  /** Refs owned by the chart component, persisting across its redraws. */
+  savedTransform: { current: d3.ZoomTransform | null };
+  viewKey: { current: string };
+  /** Identity of the current view (root id, orientation, …). */
+  key: string;
+}): {
+  zoom: d3.ZoomBehavior<SVGSVGElement, unknown>;
+  fitToView: () => void;
+  cleanup: () => void;
+} {
+  const { svgEl, zoomTarget, bounds, fitAnchor, savedTransform, viewKey, key } = opts;
+  const svg = d3.select(svgEl);
+  const zoom = d3
+    .zoom<SVGSVGElement, unknown>()
+    .scaleExtent([0.1, 2.5])
+    .on("zoom", (event) => {
+      zoomTarget.attr("transform", event.transform.toString());
+      savedTransform.current = event.transform;
+    });
+  svg.call(zoom);
+
+  // Applying a transform below the extent floor is fine (zoom.transform
+  // bypasses the extent), but the user's NEXT wheel/pinch is constrained by it
+  // and would snap jarringly up to the floor — so whenever we apply a scale
+  // below 0.1 programmatically, widen the floor to include it.
+  const admitScale = (k: number) => zoom.scaleExtent([Math.min(0.1, k), 2.5]);
+
+  const fitToView = () => {
+    const bbox = svgEl.getBoundingClientRect();
+    const vw = bbox.width || 800;
+    const vh = bbox.height || 600;
+    const margin = 60;
+    const w = bounds.maxX - bounds.minX || 1;
+    const h = bounds.maxY - bounds.minY || 1;
+    const scale = Math.min(1.2, vw / (w + margin * 2), vh / (h + margin * 2));
+    admitScale(scale);
+    const tx = vw / 2 - ((bounds.minX + bounds.maxX) / 2) * scale;
+    const ty =
+      fitAnchor === "top"
+        ? margin - bounds.minY * scale
+        : vh / 2 - ((bounds.minY + bounds.maxY) / 2) * scale;
+    svg.call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
+  };
+
+  if (viewKey.current === key && savedTransform.current) {
+    admitScale(savedTransform.current.k); // the saved transform may itself be a below-floor fit
+    svg.call(zoom.transform, savedTransform.current);
+  } else {
+    viewKey.current = key;
+    fitToView();
+  }
+
+  let fitRaf = 0;
+  let firstObserve = true;
+  const resizeObserver = new ResizeObserver(() => {
+    if (firstObserve) {
+      firstObserve = false;
+      return;
+    }
+    cancelAnimationFrame(fitRaf);
+    fitRaf = requestAnimationFrame(fitToView);
+  });
+  resizeObserver.observe(svgEl);
+
+  return {
+    zoom,
+    fitToView,
+    cleanup: () => {
+      resizeObserver.disconnect();
+      cancelAnimationFrame(fitRaf);
+    },
+  };
 }

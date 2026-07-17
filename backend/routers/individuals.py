@@ -5,19 +5,12 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from auth.deps import get_accessible_tree, get_editable_tree
+from auth.deps import get_accessible_tree, get_editable_tree, require_in_tree
 from database import get_db
 from models import Child, Citation, Family, FamilyTree, Individual
 from schemas import IndividualCreate, IndividualOut, IndividualUpdate, MergeRequest
 
 router = APIRouter(prefix="/api/trees/{tree_id}/individuals", tags=["individuals"])
-
-
-def _get_individual(db: Session, tree: FamilyTree, individual_id: uuid.UUID) -> Individual:
-    indi = db.get(Individual, individual_id)
-    if indi is None or indi.tree_id != tree.id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Individual not found")
-    return indi
 
 
 @router.get("", response_model=list[IndividualOut])
@@ -30,20 +23,24 @@ def list_individuals(
     default — they multiply the payload of every list fetch; the detail
     endpoint (and the visualization endpoints, which render them) still
     include them. Pass include_photos=true to embed them here too."""
+    if include_photos:
+        people = db.scalars(
+            select(Individual)
+            .where(Individual.tree_id == tree.id)
+            .order_by(Individual.surname, Individual.given_name)
+        )
+        return [IndividualOut.model_validate(p) for p in people]
+    # Omit the photo column from the SELECT itself, so the base64 blobs never
+    # cross the database wire. (Loading full rows and nulling the DTO field
+    # still fetched every photo; deferring the column would lazy-load it
+    # per row the moment serialization touched it.) The DTO's photo_url
+    # defaults to None.
     stmt = (
-        select(Individual)
+        select(*(c for c in Individual.__table__.c if c.key != "photo_url"))
         .where(Individual.tree_id == tree.id)
         .order_by(Individual.surname, Individual.given_name)
     )
-    people = db.scalars(stmt)
-    if include_photos:
-        return [IndividualOut.model_validate(p) for p in people]
-    out = []
-    for p in people:
-        dto = IndividualOut.model_validate(p)
-        dto.photo_url = None
-        out.append(dto)
-    return out
+    return [IndividualOut.model_validate(dict(row._mapping)) for row in db.execute(stmt)]
 
 
 @router.post("", response_model=IndividualOut, status_code=status.HTTP_201_CREATED)
@@ -65,7 +62,7 @@ def get_individual(
     tree: FamilyTree = Depends(get_accessible_tree),
     db: Session = Depends(get_db),
 ) -> Individual:
-    return _get_individual(db, tree, individual_id)
+    return require_in_tree(db, tree, Individual, individual_id)
 
 
 @router.put("/{individual_id}", response_model=IndividualOut)
@@ -75,7 +72,7 @@ def update_individual(
     tree: FamilyTree = Depends(get_editable_tree),
     db: Session = Depends(get_db),
 ) -> Individual:
-    indi = _get_individual(db, tree, individual_id)
+    indi = require_in_tree(db, tree, Individual, individual_id)
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(indi, field, value)
     db.commit()
@@ -89,7 +86,7 @@ def delete_individual(
     tree: FamilyTree = Depends(get_editable_tree),
     db: Session = Depends(get_db),
 ) -> None:
-    indi = _get_individual(db, tree, individual_id)
+    indi = require_in_tree(db, tree, Individual, individual_id)
     # Families this person is a partner in — after deletion the DB sets their
     # husband/wife reference to NULL, which can leave a meaningless "ghost"
     # family (one or zero partners and no children). Clean those up.
@@ -103,12 +100,22 @@ def delete_individual(
     )
     db.delete(indi)
     db.flush()  # applies ON DELETE SET NULL to the affected families
-    for fam in affected:
-        db.refresh(fam)
-        partners = [p for p in (fam.husband_id, fam.wife_id) if p is not None]
-        has_children = db.scalar(select(Child.individual_id).where(Child.family_id == fam.id))
-        if len(partners) < 2 and has_children is None:
-            db.delete(fam)
+    if affected:
+        # ONE query for every affected family: which are now ghosts (a partner
+        # slot NULLed and no children)? A per-family refresh + exists probe
+        # here was 2N round trips.
+        ghost_ids = set(
+            db.scalars(
+                select(Family.id).where(
+                    Family.id.in_([fam.id for fam in affected]),
+                    (Family.husband_id.is_(None)) | (Family.wife_id.is_(None)),
+                    ~select(Child.individual_id).where(Child.family_id == Family.id).exists(),
+                )
+            )
+        )
+        for fam in affected:
+            if fam.id in ghost_ids:
+                db.delete(fam)
     db.commit()
 
 
@@ -139,8 +146,8 @@ def merge_individual(
     """Merge the `duplicate_id` record into the survivor (`individual_id`):
     re-point all family/child/citation references, fill the survivor's blank
     fields from the duplicate, then delete the duplicate."""
-    survivor = _get_individual(db, tree, individual_id)
-    dup = _get_individual(db, tree, payload.duplicate_id)
+    survivor = require_in_tree(db, tree, Individual, individual_id)
+    dup = require_in_tree(db, tree, Individual, payload.duplicate_id)
     if survivor.id == dup.id:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Cannot merge a person into themselves"
@@ -169,9 +176,13 @@ def merge_individual(
     db.flush()
 
     # Re-point child links (avoiding a duplicate link in the same family).
+    # The survivor's existing memberships come from ONE query up front — a
+    # per-link db.get probe was an N+1.
+    survivor_child_fams = set(
+        db.scalars(select(Child.family_id).where(Child.individual_id == survivor.id))
+    )
     for ch in list(db.scalars(select(Child).where(Child.individual_id == dup.id))):
-        already = db.get(Child, {"family_id": ch.family_id, "individual_id": survivor.id})
-        if already is None:
+        if ch.family_id not in survivor_child_fams:
             db.add(
                 Child(
                     family_id=ch.family_id,
@@ -180,6 +191,7 @@ def merge_individual(
                     relation=ch.relation,
                 )
             )
+            survivor_child_fams.add(ch.family_id)
         db.delete(ch)
 
     # Re-point citations.
@@ -192,31 +204,39 @@ def merge_individual(
     # them: move child links across, fill missing marriage details, drop the
     # extra — otherwise the couple exports with duplicate FAMS records and
     # their children split across two family units.
-    kept_by_pair: dict[tuple, Family] = {}
-    for fam in list(
+    survivor_fams = list(
         db.scalars(
             select(Family).where(
                 Family.tree_id == tree.id,
                 (Family.husband_id == survivor.id) | (Family.wife_id == survivor.id),
             )
         )
-    ):
+    )
+    # All child links of the survivor's families in ONE query, keyed by
+    # (family, individual) — a per-child db.get probe was an N+1.
+    children_by_family: dict[uuid.UUID, dict[uuid.UUID, Child]] = {
+        fam.id: {} for fam in survivor_fams
+    }
+    for ch in db.scalars(select(Child).where(Child.family_id.in_(list(children_by_family)))):
+        children_by_family[ch.family_id][ch.individual_id] = ch
+
+    kept_by_pair: dict[tuple, Family] = {}
+    for fam in survivor_fams:
         pair = (fam.husband_id, fam.wife_id)
         keep = kept_by_pair.get(pair)
         if keep is None:
             kept_by_pair[pair] = fam
             continue
-        for ch in list(db.scalars(select(Child).where(Child.family_id == fam.id))):
-            already = db.get(Child, {"family_id": keep.id, "individual_id": ch.individual_id})
-            if already is None:
-                db.add(
-                    Child(
-                        family_id=keep.id,
-                        individual_id=ch.individual_id,
-                        birth_order=ch.birth_order,
-                        relation=ch.relation,
-                    )
+        for ch in list(children_by_family[fam.id].values()):
+            if ch.individual_id not in children_by_family[keep.id]:
+                moved = Child(
+                    family_id=keep.id,
+                    individual_id=ch.individual_id,
+                    birth_order=ch.birth_order,
+                    relation=ch.relation,
                 )
+                db.add(moved)
+                children_by_family[keep.id][ch.individual_id] = moved
             db.delete(ch)
         for field in ("married_date", "married_place", "divorced_date", "notes", "marriage_order", "gedcom_xref"):
             if not getattr(keep, field) and getattr(fam, field):

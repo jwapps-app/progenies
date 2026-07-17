@@ -41,7 +41,7 @@ export function setGlobalOrientation(o: Orientation): void {
   }
 }
 
-export function getTreeOverride(treeId: string): Orientation | null {
+function getTreeOverride(treeId: string): Orientation | null {
   return read(treeKey(treeId));
 }
 

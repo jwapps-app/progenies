@@ -10,26 +10,12 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from auth.deps import get_accessible_tree, get_editable_tree
+from auth.deps import get_accessible_tree, get_editable_tree, require_in_tree
 from database import get_db
 from models import Citation, FamilyTree, Individual, Source
 from schemas import CitationCreate, CitationOut, SourceCreate, SourceOut, SourceUpdate
 
 router = APIRouter(prefix="/api/trees/{tree_id}", tags=["sources"])
-
-
-def _get_source(db: Session, tree: FamilyTree, source_id: uuid.UUID) -> Source:
-    src = db.get(Source, source_id)
-    if src is None or src.tree_id != tree.id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source not found")
-    return src
-
-
-def _get_individual(db: Session, tree: FamilyTree, individual_id: uuid.UUID) -> Individual:
-    indi = db.get(Individual, individual_id)
-    if indi is None or indi.tree_id != tree.id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Individual not found")
-    return indi
 
 
 # ----- Sources --------------------------------------------------------------
@@ -62,7 +48,7 @@ def update_source(
     tree: FamilyTree = Depends(get_editable_tree),
     db: Session = Depends(get_db),
 ) -> Source:
-    src = _get_source(db, tree, source_id)
+    src = require_in_tree(db, tree, Source, source_id)
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(src, field, value)
     db.commit()
@@ -76,7 +62,7 @@ def delete_source(
     tree: FamilyTree = Depends(get_editable_tree),
     db: Session = Depends(get_db),
 ) -> None:
-    src = _get_source(db, tree, source_id)
+    src = require_in_tree(db, tree, Source, source_id)
     db.delete(src)  # citations cascade
     db.commit()
 
@@ -99,7 +85,7 @@ def list_citations(
     tree: FamilyTree = Depends(get_accessible_tree),
     db: Session = Depends(get_db),
 ) -> list[CitationOut]:
-    indi = _get_individual(db, tree, individual_id)
+    indi = require_in_tree(db, tree, Individual, individual_id)
     rows = db.execute(
         select(Citation, Source.title)
         .join(Source, Source.id == Citation.source_id)
@@ -120,8 +106,8 @@ def create_citation(
     tree: FamilyTree = Depends(get_editable_tree),
     db: Session = Depends(get_db),
 ) -> CitationOut:
-    indi = _get_individual(db, tree, individual_id)
-    src = _get_source(db, tree, payload.source_id)
+    indi = require_in_tree(db, tree, Individual, individual_id)
+    src = require_in_tree(db, tree, Source, payload.source_id)
     cit = Citation(
         source_id=src.id, individual_id=indi.id, page=payload.page, notes=payload.notes
     )

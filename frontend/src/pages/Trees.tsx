@@ -194,14 +194,35 @@ export default function TreesPage() {
         </ul>
       )}
 
-      {sharingTree && <ShareDialog tree={sharingTree} onClose={() => setSharingTree(null)} />}
+      {sharingTree && (
+        <ShareDialog
+          tree={sharingTree}
+          onClose={() => setSharingTree(null)}
+          onUpdated={(updated) => {
+            // Keep the list (and the open dialog's tree) in sync with the server —
+            // a stale share_token here would offer "Create public link" again,
+            // which ROTATES the token and breaks the URL already handed out.
+            setTrees((t) => t.map((x) => (x.id === updated.id ? updated : x)));
+            setSharingTree(updated);
+          }}
+        />
+      )}
     </div>
   );
 }
 
 /** Owner-only dialog to manage who a tree is shared with. Add a collaborator
  * from the user directory at a chosen access level, change a level, or revoke. */
-function ShareDialog({ tree, onClose }: { tree: Tree; onClose: () => void }) {
+function ShareDialog({
+  tree,
+  onClose,
+  onUpdated,
+}: {
+  tree: Tree;
+  onClose: () => void;
+  /** Called with the server's updated tree after a link create/revoke. */
+  onUpdated: (tree: Tree) => void;
+}) {
   const [shares, setShares] = useState<Share[]>([]);
   const [directory, setDirectory] = useState<DirectoryUser[]>([]);
   const [pickUser, setPickUser] = useState("");
@@ -218,6 +239,7 @@ function ShareDialog({ tree, onClose }: { tree: Tree; onClose: () => void }) {
     try {
       const updated = await api.createShareLink(tree.id);
       setShareToken(updated.share_token ?? null);
+      onUpdated(updated);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create link");
     }
@@ -227,8 +249,9 @@ function ShareDialog({ tree, onClose }: { tree: Tree; onClose: () => void }) {
     if (!confirm("Revoke the public link? Anyone using it will lose access immediately.")) return;
     setError(null);
     try {
-      await api.revokeShareLink(tree.id);
+      const updated = await api.revokeShareLink(tree.id);
       setShareToken(null);
+      onUpdated(updated);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to revoke link");
     }

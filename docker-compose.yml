@@ -19,6 +19,9 @@ services:
   backend:
     build: ./backend
     restart: unless-stopped
+    # Dev override: auto-reload on the bind-mounted source below. The image's
+    # own CMD (no reload, --workers 2) is the production configuration.
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
     depends_on:
       db:
         condition: service_healthy

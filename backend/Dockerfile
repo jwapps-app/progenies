@@ -8,12 +8,14 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
-
 # Run as an unprivileged user, not root — a code-exec bug in the app can't then
-# tamper with the image or escalate on the host.
-RUN useradd --system --create-home --uid 10001 appuser \
-    && chown -R appuser:appuser /app
+# tamper with the image or escalate on the host. Created BEFORE the source copy
+# so COPY can set ownership directly; a post-copy `chown -R` would duplicate
+# the whole app layer on every code change.
+RUN useradd --system --create-home --uid 10001 appuser
+
+COPY --chown=10001:10001 . .
+
 USER appuser
 
 EXPOSE 8000

@@ -1,7 +1,16 @@
 import { useEffect, useRef } from "react";
 import * as d3 from "d3";
 import type { TreeNode } from "../../types";
-import { MAX_NODE_WIDTH, cardSize, drawCard, readPalette } from "./chartCard";
+import {
+  MAX_NODE_H,
+  MAX_NODE_WIDTH,
+  cardSize,
+  drawCard,
+  drawHighlightRing,
+  readPalette,
+  setupChartViewport,
+} from "./chartCard";
+import type { CardSize, Palette } from "./chartCard";
 
 export type MagnifyMode = "loupe" | "bulge" | "off";
 
@@ -31,15 +40,20 @@ interface Props {
 }
 
 
-// Set per-render (in the effect) before layout() runs; read by placeConverging.
+// --- Layout-pass globals ---------------------------------------------------
+// Set per-render (in the effect) immediately before layout() runs and read by
+// the layout helpers below. They are ONLY valid during that synchronous layout
+// pass — with two charts mounted, the other instance's draw overwrites them.
+// Event-time code (hover handlers, rAF callbacks) must never read them; the
+// draw effect snapshots what it needs into locals instead.
 let RENDER_CONVERGING = false;
 // Ids that appear as a bloodline descendant (root + all children, recursively).
 // A spouse whose id is in this set will be pedigree-collapsed (shown once, via a
 // cross-link), so layout keeps NON-collapsed spouses in the prime adjacent slots.
 let BLOODLINE = new Set<string>();
-// Orientation, set per-render before layout()/linkPath() run. When TRUE the tree is
-// laid out top-down internally then mapped LEFT-TO-RIGHT at draw time (generation axis
-// → screen x, sibling axis → screen y); boxes stay horizontal (text readable).
+// Orientation. When TRUE the tree is laid out top-down internally then mapped
+// LEFT-TO-RIGHT at draw time (generation axis → screen x, sibling axis → screen
+// y); boxes stay horizontal (text readable).
 let HORIZONTAL = false;
 
 function computeBloodline(root: TreeNode): Set<string> {
@@ -57,9 +71,8 @@ const SPOUSE_GAP = 18; // gap between a person and an adjacent spouse box
 const SIBLING_GAP = 26; // gap between adjacent sibling subtrees
 const UNION_GAP = 50; // gap between the child-bands of different unions
 // Cards autosize (see chartCard.cardSize); layout GEOMETRY (row step, bar
-// positions) uses these fixed allowances so rows and sibling bars stay straight
-// while individual boxes vary within them.
-const MAX_NODE_H = 60; // tallest card (two name lines + lifespan)
+// positions) uses fixed allowances — the shared MAX card extents — so rows and
+// sibling bars stay straight while individual boxes vary within them.
 const ROW_HEIGHT = MAX_NODE_H + 90; // distance between generations (vertical layout)
 // Generation spacing for horizontal layout: generations run along screen-x, where a
 // box spans its full WIDTH, so the step must clear the WIDEST possible card.
@@ -75,9 +88,10 @@ const acrossOf = (p: TreeNode) => (HORIZONTAL ? cardSize(p).h : cardSize(p).w);
 const genOf = (p: TreeNode) => (HORIZONTAL ? cardSize(p).w : cardSize(p).h);
 const SIB_BAR_DROP = 26; // height of the sibling bar above the children
 
-// Hover loupe (magnifying glass).
-const CHART_CONTENT_ID = "progenies-chart-content";
-const LOUPE_CLIP_ID = "progenies-loupe-clip";
+// Hover loupe (magnifying glass). The content/clip DOM ids are suffixed with a
+// per-instance counter — with two pyramids mounted, a shared id would make one
+// chart's loupe <use href> / clipPath resolve to the OTHER chart's content.
+let instanceSeq = 0;
 const LOUPE_RADIUS = 110; // lens radius in screen px
 const LOUPE_SCALE = 1; // content scale shown inside the lens (readable size)
 const BULGE_RADIUS = 180; // fisheye radius in screen px
@@ -115,6 +129,22 @@ function makeFisheye(fx: number, fy: number, radius: number, distortion: number,
 
 type Distort = (x: number, y: number) => [number, number];
 const IDENTITY: Distort = (x, y) => [x, y];
+
+interface Rect {
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+}
+
+/** Does the circle at (fx,fy) with radius r reach into rect `b`? (Standard
+ * closest-point test.) Used to keep per-mousemove fisheye work proportional to
+ * what the lens can actually touch. */
+function circleHitsRect(fx: number, fy: number, r: number, b: Rect): boolean {
+  const dx = fx - Math.max(b.minX, Math.min(fx, b.maxX));
+  const dy = fy - Math.max(b.minY, Math.min(fy, b.maxY));
+  return dx * dx + dy * dy < r * r;
+}
 
 // ---------------------------------------------------------------------------
 // Custom couple-aware layout.
@@ -256,6 +286,44 @@ function linkXs(l: Link): number[] {
   if (l.kind === "marriage") return [l.x1, l.x2];
   if (l.kind === "crosslink") return [l.ax, l.bx, ...l.childXs];
   return [l.husbandX, ...l.drops.map((d) => d.x)];
+}
+
+/** Conservative layout-space bounding box of a link's drawn geometry, used by
+ * the fisheye to decide whether the lens circle can affect it. Padded (riser
+ * nudges, lane offsets, ring lifts) — a false positive only costs one extra
+ * path write per frame. */
+function linkBounds(l: Link): Rect {
+  const xs = linkXs(l);
+  const ys: number[] = [];
+  if (l.kind === "family") {
+    ys.push(l.sourceY, l.childTopY - SIB_BAR_DROP, l.childTopY, ...(l.childTops ?? []));
+  } else if (l.kind === "marriage") {
+    ys.push(l.y);
+  } else if (l.kind === "crosslink") {
+    const lane = l.lane ?? 0;
+    ys.push(l.ay, l.by);
+    if (l.childXs.length) {
+      // Rail above the sibling bar (see linkPath), plus the child drops.
+      ys.push(l.childTopY, l.childTopY - SIB_BAR_DROP - 24 - lane * 12, ...(l.childTops ?? []));
+    } else {
+      // Childless U-turn rail below the higher box; MAX_NODE_WIDTH is the
+      // largest possible generation extent (horizontal layout), so this bounds
+      // the rail from above in either orientation.
+      ys.push(
+        Math.min(l.ay, l.by) + Math.max(l.aGen ?? MAX_NODE_WIDTH, l.bGen ?? MAX_NODE_WIDTH) / 2 + 18 + lane * 26
+      );
+    }
+  } else {
+    ys.push(l.husbandTopY, l.barY);
+    for (const dr of l.drops) ys.push(dr.toY);
+  }
+  const PAD = 40;
+  return {
+    minX: Math.min(...xs) - PAD,
+    maxX: Math.max(...xs) + PAD,
+    minY: Math.min(...ys) - PAD,
+    maxY: Math.max(...ys) + PAD,
+  };
 }
 
 function normalize(boxes: PlacedBox[], links: Link[], centerX: number): Block {
@@ -571,10 +639,39 @@ export default function DescendantPyramid({
 }: Props) {
   const svgRef = useRef<SVGSVGElement | null>(null);
   // Preserve the user's pan/zoom across redraws of the SAME view (data edits,
-  // theme/magnify/highlight changes): remember the last transform and only
-  // fit-to-view when the root or orientation actually changes.
+  // theme changes): remember the last transform and only fit-to-view when the
+  // root or orientation actually changes.
   const savedTransform = useRef<d3.ZoomTransform | null>(null);
   const viewKey = useRef<string>("");
+  // Per-instance DOM id suffix (see instanceSeq above).
+  const instance = useRef(0);
+  if (instance.current === 0) instance.current = ++instanceSeq;
+  // Per-person node group + card size, recorded by the main draw so the
+  // highlight effect can swap rings without a re-layout. A person can appear
+  // more than once (rare, but e.g. converging-line duplicates), hence arrays.
+  const nodeByPerson = useRef(
+    new Map<string, { el: d3.Selection<SVGGElement, unknown, null, undefined>; size: CardSize }[]>()
+  );
+  const paletteRef = useRef<Palette | null>(null);
+  // Read through refs so the main draw (which deliberately does NOT depend on
+  // highlightIds or magnify) always sees the current values.
+  const highlightRef = useRef(highlightIds);
+  highlightRef.current = highlightIds;
+  const magnifyRef = useRef(magnify);
+  // Rebinds the hover-magnification handlers for a mode; created by the main
+  // draw (it closes over the drawn elements) and called by the magnify effect.
+  const applyMagnifyRef = useRef<((mode: MagnifyMode) => void) | null>(null);
+
+  const applyHighlights = () => {
+    const svgEl = svgRef.current;
+    const P = paletteRef.current;
+    if (!svgEl || !P) return;
+    d3.select(svgEl).selectAll("rect.highlight-ring").remove();
+    const ids = highlightRef.current;
+    if (!ids?.size) return;
+    for (const id of ids)
+      for (const e of nodeByPerson.current.get(id) ?? []) drawHighlightRing(e.el, e.size, P);
+  };
 
   useEffect(() => {
     const svgEl = svgRef.current;
@@ -583,10 +680,18 @@ export default function DescendantPyramid({
     const svg = d3.select(svgEl);
     svg.selectAll("*").remove();
     const P = readPalette(svgEl);
+    paletteRef.current = P;
+    nodeByPerson.current = new Map();
+    const contentId = `progenies-chart-content-${instance.current}`;
+    const loupeClipId = `progenies-loupe-clip-${instance.current}`;
 
-    HORIZONTAL = orientation === "horizontal";
+    // Orientation snapshot for THIS draw: event-time code (the magnify handlers
+    // below outlive the synchronous layout pass) must read this local, never
+    // the HORIZONTAL global — another mounted chart may have overwritten it.
+    const horizontal = orientation === "horizontal";
+    HORIZONTAL = horizontal;
     // Map a layout-space point to screen space (axis swap for horizontal).
-    const sw = (x: number, y: number): [number, number] => (HORIZONTAL ? [y, x] : [x, y]);
+    const sw = (x: number, y: number): [number, number] => (horizontal ? [y, x] : [x, y]);
     RENDER_CONVERGING = showConverging;
     BLOODLINE = computeBloodline(root);
     const block = layout(root, 0);
@@ -695,28 +800,21 @@ export default function DescendantPyramid({
         }
       }
     }
-    // Outer group carries the pan/zoom transform; the inner content group is
-    // left untransformed so the hover loupe can reference it via <use> and apply
-    // its own magnification.
+    // Outer group carries the pan/zoom transform (wired up in the viewport
+    // setup further down); the inner content group is left untransformed so the
+    // hover loupe can reference it via <use> and apply its own magnification.
     const gZoom = svg.append("g");
-    const g = gZoom.append("g").attr("id", CHART_CONTENT_ID);
-
-    const zoom = d3
-      .zoom<SVGSVGElement, unknown>()
-      .scaleExtent([0.1, 2.5])
-      .on("zoom", (event) => {
-        gZoom.attr("transform", event.transform.toString());
-        savedTransform.current = event.transform;
-      });
-    svg.call(zoom);
+    const g = gZoom.append("g").attr("id", contentId);
 
     const linkLayer = g.append("g");
     // Handles kept so the fisheye (bulge) can re-distort each element in place.
     // `childEl` is the blue family-coloured child-drop part of a crosslink/comb.
+    // `bounds` lets the bulge skip links its lens can't reach.
     const linkEls: {
       el: d3.Selection<SVGPathElement, unknown, null, undefined>;
       childEl?: d3.Selection<SVGPathElement, unknown, null, undefined>;
       link: Link;
+      bounds: Rect;
     }[] = [];
     const ringEls: { el: d3.Selection<SVGGElement, unknown, null, undefined>; x: number; y: number }[] = [];
     // Marriage symbol above a couple's connection: interlocking rings ⚭ for a current
@@ -735,7 +833,7 @@ export default function DescendantPyramid({
       ringEls.push({ el: rg, x: cx, y: cy });
     };
     for (const l of block.links) {
-      const { d, width, childD } = linkPath(l, IDENTITY);
+      const { d, width, childD } = linkPath(l, IDENTITY, horizontal);
       const color = l.kind === "family" ? P.link : P.marriage;
       // Dotted for: gap (unknown-depth) descendant links, and UNMARRIED couples.
       const dotted =
@@ -759,7 +857,7 @@ export default function DescendantPyramid({
           .attr("stroke", P.link)
           .attr("stroke-width", 1.5);
       }
-      linkEls.push({ el, childEl, link: l });
+      linkEls.push({ el, childEl, link: l, bounds: linkBounds(l) });
 
       // Marriage ring above every MARRIED couple's connection (⚮ if divorced).
       if (l.kind === "marriage" && !l.unmarried) drawRing((l.x1 + l.x2) / 2, l.y - 13, l.divorced);
@@ -799,19 +897,13 @@ export default function DescendantPyramid({
         });
       drawCard(gBox, box.person, P, box.tag);
 
-      // Relationship-path highlight ring (sized to this card).
-      if (highlightIds?.has(box.person.id)) {
-        const cs = cardSize(box.person);
-        gBox
-          .insert("rect", ":first-child")
-          .attr("x", -cs.w / 2 - 4)
-          .attr("y", -cs.h / 2 - 4)
-          .attr("width", cs.w + 8)
-          .attr("height", cs.h + 8)
-          .attr("rx", 11)
-          .attr("fill", "none")
-          .attr("stroke", P.marriage)
-          .attr("stroke-width", 3);
+      // Record for the relationship-path highlight effect (rings are drawn in
+      // applyHighlights, outside this rebuild).
+      {
+        const entry = { el: gBox, size: cardSize(box.person) };
+        const arr = nodeByPerson.current.get(box.person.id);
+        if (arr) arr.push(entry);
+        else nodeByPerson.current.set(box.person.id, [entry]);
       }
 
       // "+ child" affordance on a couple (spouse box): adds a child straight to
@@ -906,6 +998,12 @@ export default function DescendantPyramid({
     const mainBloodline = BLOODLINE;
     const mainIds = new Set(block.boxes.map((b) => b.person.id));
     const placedGraft: { x: number; y: number }[] = []; // absolute centres of grafted boxes
+    // One bounding box per graft: the bulge is SUPPRESSED whenever its lens
+    // reaches a graft (the graft's elements live in a translated subgroup and
+    // aren't in the distortion collections — suppressing beats magnifying
+    // main-tree nodes into/over an undistorted graft, and is far less invasive
+    // than re-plumbing graft links into absolute layout space).
+    const graftRects: Rect[] = [];
     for (const box of block.boxes) {
       if (!box.isSpouse || mainBloodline.has(box.person.id)) continue;
       const fam = expandedFamily?.[box.person.id];
@@ -942,7 +1040,7 @@ export default function DescendantPyramid({
       const graftLinks = gGraft.append("g");
       const graftNodes = gGraft.append("g");
       for (const l of gb.links) {
-        const { d, width, childD } = linkPath(l, IDENTITY);
+        const { d, width, childD } = linkPath(l, IDENTITY, horizontal);
         graftLinks
           .append("path")
           .attr("d", d)
@@ -986,6 +1084,17 @@ export default function DescendantPyramid({
         graftNodeEls.push({ x: b.x + dx, y: b.y + dy, w: bs.w, h: bs.h });
         placedGraft.push({ x: b.x + dx, y: b.y + dy });
       }
+      if (graftBoxes.length) {
+        const rect: Rect = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity };
+        for (const b of graftBoxes) {
+          const bs = cardSize(b.person);
+          rect.minX = Math.min(rect.minX, b.x + dx - bs.w / 2);
+          rect.maxX = Math.max(rect.maxX, b.x + dx + bs.w / 2);
+          rect.minY = Math.min(rect.minY, b.y + dy - bs.h / 2);
+          rect.maxY = Math.max(rect.maxY, b.y + dy + bs.h / 2);
+        }
+        graftRects.push(rect);
+      }
       // When lifted off the spouse, bridge the floating family down to the spouse
       // box with a dashed connector. It is drawn DIAGONALLY (entering the box top
       // off-centre, toward the family's side) so it can only ever cross the chart's
@@ -1006,7 +1115,12 @@ export default function DescendantPyramid({
           .attr("stroke-dasharray", "4 3");
       }
     }
-    BLOODLINE = computeBloodline(root);
+    // Restore the main tree's set (the graft loop reassigned it per graft) —
+    // no need to re-walk the tree, it was computed above.
+    BLOODLINE = mainBloodline;
+
+    // Ring the currently-highlighted people (the rebuild wiped any old rings).
+    applyHighlights();
 
     // Full extent of everything drawn, in SCREEN space (so the axis swap for the
     // horizontal layout is already applied). Boxes autosize, so bounds use each
@@ -1034,193 +1148,246 @@ export default function DescendantPyramid({
       maxY = 0;
     }
 
-    // Fit the whole tree to the current viewport. Re-run whenever the available
-    // space changes (e.g. the detail panel docks/undocks, or the window resizes)
-    // so the tree always stays fully visible.
-    const fitToView = () => {
-      const bbox = svgEl.getBoundingClientRect();
-      const vw = bbox.width || 800;
-      const vh = bbox.height || 600;
-      const margin = 60;
-      const w = maxX - minX || 1;
-      const h = maxY - minY || 1;
-      const scale = Math.min(1.2, vw / (w + margin * 2), vh / (h + margin * 2));
-      const tx = vw / 2 - ((minX + maxX) / 2) * scale;
-      const ty = margin - minY * scale;
-      svg.call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
-    };
-    // Same root + orientation as the previous draw → this is a redraw for an
-    // edit / theme / magnify / highlight change: restore the user's pan/zoom
-    // instead of yanking them back to the whole-tree fit.
-    const key = `${root.id}|${orientation}`;
-    if (viewKey.current === key && savedTransform.current) {
-      svg.call(zoom.transform, savedTransform.current);
-    } else {
-      viewKey.current = key;
-      fitToView();
-    }
-
-    let fitRaf = 0;
-    // ResizeObserver fires once immediately on observe() — skip that initial
-    // callback or it would override the transform we just restored.
-    let firstObserve = true;
-    const resizeObserver = new ResizeObserver(() => {
-      if (firstObserve) {
-        firstObserve = false;
-        return;
-      }
-      cancelAnimationFrame(fitRaf);
-      fitRaf = requestAnimationFrame(fitToView);
+    // Pan/zoom + fit-to-view wiring (shared with AncestorChart): restores the
+    // user's transform on a same-view redraw (an edit / theme change), fits the
+    // whole tree on a new root/orientation, and re-fits whenever the available
+    // space changes (e.g. the detail panel docks/undocks, or the window resizes).
+    const vp = setupChartViewport({
+      svgEl,
+      zoomTarget: gZoom,
+      bounds: { minX, maxX, minY, maxY },
+      fitAnchor: "top",
+      savedTransform,
+      viewKey,
+      key: `${root.id}|${orientation}`,
     });
-    resizeObserver.observe(svgEl);
 
-    // Always clear previous magnify handlers first: they're bound on the
+    // ----- Hover magnification --------------------------------------------
+    // Bound OUTSIDE the main draw's dependency list: switching loupe/bulge/off
+    // only rebinds these handlers on the persistent <svg>, it never re-lays-out
+    // the tree. The binder below closes over this draw's elements; the magnify
+    // effect calls it (via applyMagnifyRef) when the mode changes.
+    //
+    // Previous handlers are always cleared on rebind: they're bound on the
     // PERSISTENT <svg> element (selectAll("*").remove() clears children, not
     // the svg's own listeners), so switching to "off" would otherwise leave a
-    // stale bulge handler running O(n) work per mousemove against the detached
+    // stale bulge handler running per-mousemove work against the detached
     // previous chart — a CPU and memory leak.
-    svg.on(".mag", null);
-    // The bulge's pending animation frame, cancelled on redraw/unmount.
-    let magFrame = 0;
+    let magFrame = 0; // the bulge's pending animation frame
 
-    // ----- Hover loupe (magnifying glass) ---------------------------------
-    // A circular lens follows the cursor and shows the chart enlarged to a
-    // readable size. It only appears while the tree is zoomed out (scale < the
-    // lens scale) — when you've zoomed in enough to read normally, it stays off.
-    if (magnify === "loupe") {
-      const defs = svg.append("defs");
-      const clip = defs.append("clipPath").attr("id", LOUPE_CLIP_ID);
-      const clipCircle = clip.append("circle").attr("r", LOUPE_RADIUS);
-      const loupe = svg.append("g").style("display", "none").style("pointer-events", "none");
-      const lensInner = loupe.append("g").attr("clip-path", `url(#${LOUPE_CLIP_ID})`);
-      lensInner.append("circle").attr("r", LOUPE_RADIUS).attr("fill", P.lensBg);
-      const lensUse = lensInner.append("use").attr("href", `#${CHART_CONTENT_ID}`);
-      const lensBorder = loupe
-        .append("circle")
-        .attr("r", LOUPE_RADIUS)
-        .attr("fill", "none")
-        .attr("stroke", P.link)
-        .attr("stroke-width", 2);
+    // Elements written by the LAST bulge frame. Each new frame resets exactly
+    // the members that left the lens, and a full reset only touches members —
+    // so per-mousemove cost tracks what the lens covers, not the whole tree.
+    const bulgedLinks = new Set<(typeof linkEls)[number]>();
+    const bulgedNodes = new Set<(typeof nodeEls)[number]>();
+    const bulgedRings = new Set<(typeof ringEls)[number]>();
+    const resetLink = (le: (typeof linkEls)[number]) => {
+      const lp = linkPath(le.link, IDENTITY, horizontal);
+      le.el.attr("d", lp.d);
+      if (le.childEl && lp.childD) le.childEl.attr("d", lp.childD);
+    };
+    const resetNode = (n: (typeof nodeEls)[number]) => {
+      const [nx, ny] = sw(n.x, n.y);
+      n.el.attr("transform", `translate(${nx},${ny})`);
+    };
+    const resetRing = (r: (typeof ringEls)[number]) => {
+      const [rx, ry] = sw(r.x, r.y);
+      r.el.attr("transform", `translate(${rx},${ry})`);
+    };
+    const resetBulge = () => {
+      for (const le of bulgedLinks) resetLink(le);
+      for (const n of bulgedNodes) resetNode(n);
+      for (const r of bulgedRings) resetRing(r);
+      bulgedLinks.clear();
+      bulgedNodes.clear();
+      bulgedRings.clear();
+    };
 
-      svg.on("mousemove.mag", (event: MouseEvent) => {
-        const t = d3.zoomTransform(svgEl);
-        if (t.k >= LOUPE_SCALE) {
-          loupe.style("display", "none");
-          return;
-        }
-        const [sx, sy] = d3.pointer(event, svgEl);
-        const cx = (sx - t.x) / t.k; // content-space point under the cursor
-        const cy = (sy - t.y) / t.k;
-        lensUse.attr(
-          "transform",
-          `translate(${sx},${sy}) scale(${LOUPE_SCALE}) translate(${-cx},${-cy})`
-        );
-        clipCircle.attr("cx", sx).attr("cy", sy);
-        lensInner.select("circle").attr("cx", sx).attr("cy", sy);
-        lensBorder.attr("cx", sx).attr("cy", sy);
-        loupe.style("display", null);
-      });
-      svg.on("mouseleave.mag", () => loupe.style("display", "none"));
-    }
+    let boundMode: MagnifyMode | null = null;
+    let loupeDefs: d3.Selection<SVGDefsElement, unknown, null, undefined> | null = null;
+    let loupeG: d3.Selection<SVGGElement, unknown, null, undefined> | null = null;
 
-    // ----- Fisheye bulge --------------------------------------------------
-    // The area under the cursor swells and the surrounding nodes squeeze outward,
-    // distorting the layout in place. On each move it re-distorts every node, link
-    // path and marriage ring; links anchor to box CENTRES while distorting (the
-    // scaled boxes cover the join) so nothing detaches. Resets on mouse-leave.
-    //
-    // Coordinate spaces: the fisheye map and all stored node/ring/link points
-    // are in LAYOUT space; the screen swaps axes in horizontal orientation.
-    // linkPath swaps AFTER distorting, so node/ring transforms must do the
-    // same (`sw`), and the focus point (from the pointer, i.e. screen space)
-    // must be swapped INTO layout space — sw is its own inverse.
-    if (magnify === "bulge") {
-      // Skip the O(n) reset unless something is actually distorted — otherwise
-      // every mousemove while zoomed-in rebuilds every path for no visible change.
-      let distorted = false;
-      const reset = () => {
-        if (!distorted) return;
-        distorted = false;
-        for (const { el, childEl, link } of linkEls) {
-          const lp = linkPath(link, IDENTITY);
-          el.attr("d", lp.d);
-          if (childEl && lp.childD) childEl.attr("d", lp.childD);
-        }
-        for (const n of nodeEls) {
-          const [nx, ny] = sw(n.x, n.y);
-          n.el.attr("transform", `translate(${nx},${ny})`);
-        }
-        for (const r of ringEls) {
-          const [rx, ry] = sw(r.x, r.y);
-          r.el.attr("transform", `translate(${rx},${ry})`);
-        }
-      };
-      svg.on("mousemove.mag", (event: MouseEvent) => {
-        const t = d3.zoomTransform(svgEl);
-        if (t.k >= LOUPE_SCALE) {
-          reset();
-          return;
-        }
-        const [sx, sy] = d3.pointer(event, svgEl);
-        const cx = (sx - t.x) / t.k; // focus in content (screen) coordinates
-        const cy = (sy - t.y) / t.k;
-        const [fx, fy] = sw(cx, cy); // → layout space (swap is self-inverse)
-        const radius = BULGE_RADIUS / t.k;
-        // Peak magnification needed to bring the focal node up to a readable absolute
-        // size at the current zoom: readable / current zoom (e.g. 0.1× tree → ~10×).
-        // The fisheye's peak scale ≈ its distortion, so drive both from this.
-        const peak = Math.min(BULGE_MAX_PEAK, Math.max(BULGE_MIN_PEAK, BULGE_READABLE_SCALE / t.k));
-        if (magFrame) cancelAnimationFrame(magFrame);
-        magFrame = requestAnimationFrame(() => {
-          distorted = true;
-          const { map, scale } = makeFisheye(fx, fy, radius, peak, peak);
-          for (const { el, childEl, link } of linkEls) {
-            const lp = linkPath(link, map, true);
-            el.attr("d", lp.d);
-            if (childEl && lp.childD) childEl.attr("d", lp.childD);
+    const applyMagnify = (mode: MagnifyMode) => {
+      if (mode === boundMode) return; // mount runs both effects — bind once
+      boundMode = mode;
+      svg.on(".mag", null);
+      if (magFrame) cancelAnimationFrame(magFrame);
+      resetBulge();
+      loupeDefs?.remove();
+      loupeDefs = null;
+      loupeG?.remove();
+      loupeG = null;
+
+      // ----- Hover loupe (magnifying glass) -------------------------------
+      // A circular lens follows the cursor and shows the chart enlarged to a
+      // readable size. It only appears while the tree is zoomed out (scale <
+      // the lens scale) — when you've zoomed in enough to read normally, it
+      // stays off.
+      if (mode === "loupe") {
+        loupeDefs = svg.append("defs");
+        const clip = loupeDefs.append("clipPath").attr("id", loupeClipId);
+        const clipCircle = clip.append("circle").attr("r", LOUPE_RADIUS);
+        const loupe = (loupeG = svg
+          .append("g")
+          .style("display", "none")
+          .style("pointer-events", "none"));
+        const lensInner = loupe.append("g").attr("clip-path", `url(#${loupeClipId})`);
+        lensInner.append("circle").attr("r", LOUPE_RADIUS).attr("fill", P.lensBg);
+        const lensUse = lensInner.append("use").attr("href", `#${contentId}`);
+        const lensBorder = loupe
+          .append("circle")
+          .attr("r", LOUPE_RADIUS)
+          .attr("fill", "none")
+          .attr("stroke", P.link)
+          .attr("stroke-width", 2);
+
+        svg.on("mousemove.mag", (event: MouseEvent) => {
+          const t = d3.zoomTransform(svgEl);
+          if (t.k >= LOUPE_SCALE) {
+            loupe.style("display", "none");
+            return;
           }
-          for (const n of nodeEls) {
-            const [dx, dy] = map(n.x, n.y);
-            const [px, py] = sw(dx, dy);
-            n.el.attr("transform", `translate(${px},${py}) scale(${scale(n.x, n.y)})`);
-          }
-          for (const r of ringEls) {
-            const [dx, dy] = map(r.x, r.y);
-            const [px, py] = sw(dx, dy);
-            r.el.attr("transform", `translate(${px},${py}) scale(${scale(r.x, r.y)})`);
-          }
+          const [sx, sy] = d3.pointer(event, svgEl);
+          const cx = (sx - t.x) / t.k; // content-space point under the cursor
+          const cy = (sy - t.y) / t.k;
+          lensUse.attr(
+            "transform",
+            `translate(${sx},${sy}) scale(${LOUPE_SCALE}) translate(${-cx},${-cy})`
+          );
+          clipCircle.attr("cx", sx).attr("cy", sy);
+          lensInner.select("circle").attr("cx", sx).attr("cy", sy);
+          lensBorder.attr("cx", sx).attr("cy", sy);
+          loupe.style("display", null);
         });
-      });
-      svg.on("mouseleave.mag", () => {
-        if (magFrame) cancelAnimationFrame(magFrame);
-        reset();
-      });
-    }
+        svg.on("mouseleave.mag", () => loupe.style("display", "none"));
+      }
+
+      // ----- Fisheye bulge ------------------------------------------------
+      // The area under the cursor swells and the surrounding nodes squeeze
+      // outward, distorting the layout in place. Each frame re-distorts only the
+      // nodes, link paths and marriage rings the lens circle can reach (plus one
+      // reset write for anything that just left it); links anchor to box CENTRES
+      // while distorting (the scaled boxes cover the join) so nothing detaches.
+      // Resets on mouse-leave.
+      //
+      // Coordinate spaces: the fisheye map and all stored node/ring/link points
+      // are in LAYOUT space; the screen swaps axes in horizontal orientation.
+      // linkPath swaps AFTER distorting, so node/ring transforms must do the
+      // same (`sw`), and the focus point (from the pointer, i.e. screen space)
+      // must be swapped INTO layout space — sw is its own inverse.
+      if (mode === "bulge") {
+        svg.on("mousemove.mag", (event: MouseEvent) => {
+          const t = d3.zoomTransform(svgEl);
+          if (t.k >= LOUPE_SCALE) {
+            resetBulge();
+            return;
+          }
+          const [sx, sy] = d3.pointer(event, svgEl);
+          const cx = (sx - t.x) / t.k; // focus in content (screen) coordinates
+          const cy = (sy - t.y) / t.k;
+          const [fx, fy] = sw(cx, cy); // → layout space (swap is self-inverse)
+          const radius = BULGE_RADIUS / t.k;
+          // Grafted family-of-origin elements aren't in the distortion
+          // collections, so suppress the bulge whenever the lens reaches a
+          // graft's region (see graftRects) instead of magnifying main-tree
+          // nodes into/over the undistorted graft.
+          if (graftRects.some((r) => circleHitsRect(fx, fy, radius, r))) {
+            if (magFrame) cancelAnimationFrame(magFrame);
+            resetBulge();
+            return;
+          }
+          // Peak magnification needed to bring the focal node up to a readable absolute
+          // size at the current zoom: readable / current zoom (e.g. 0.1× tree → ~10×).
+          // The fisheye's peak scale ≈ its distortion, so drive both from this.
+          const peak = Math.min(BULGE_MAX_PEAK, Math.max(BULGE_MIN_PEAK, BULGE_READABLE_SCALE / t.k));
+          if (magFrame) cancelAnimationFrame(magFrame);
+          magFrame = requestAnimationFrame(() => {
+            const { map, scale } = makeFisheye(fx, fy, radius, peak, peak);
+            for (const le of linkEls) {
+              if (circleHitsRect(fx, fy, radius, le.bounds)) {
+                const lp = linkPath(le.link, map, horizontal, true);
+                le.el.attr("d", lp.d);
+                if (le.childEl && lp.childD) le.childEl.attr("d", lp.childD);
+                bulgedLinks.add(le);
+              } else if (bulgedLinks.delete(le)) resetLink(le);
+            }
+            for (const n of nodeEls) {
+              // map/scale key on the box CENTRE, and both are identity outside
+              // the radius — a point test is exact here (rings likewise).
+              if (Math.hypot(n.x - fx, n.y - fy) < radius) {
+                const [dx, dy] = map(n.x, n.y);
+                const [px, py] = sw(dx, dy);
+                n.el.attr("transform", `translate(${px},${py}) scale(${scale(n.x, n.y)})`);
+                bulgedNodes.add(n);
+              } else if (bulgedNodes.delete(n)) resetNode(n);
+            }
+            for (const r of ringEls) {
+              if (Math.hypot(r.x - fx, r.y - fy) < radius) {
+                const [dx, dy] = map(r.x, r.y);
+                const [px, py] = sw(dx, dy);
+                r.el.attr("transform", `translate(${px},${py}) scale(${scale(r.x, r.y)})`);
+                bulgedRings.add(r);
+              } else if (bulgedRings.delete(r)) resetRing(r);
+            }
+          });
+        });
+        svg.on("mouseleave.mag", () => {
+          if (magFrame) cancelAnimationFrame(magFrame);
+          resetBulge();
+        });
+      }
+    };
+    applyMagnifyRef.current = applyMagnify;
+    applyMagnify(magnifyRef.current);
 
     return () => {
-      resizeObserver.disconnect();
-      cancelAnimationFrame(fitRaf);
+      vp.cleanup();
       if (magFrame) cancelAnimationFrame(magFrame);
       svg.on(".mag", null);
+      applyMagnifyRef.current = null;
     };
+    // magnify and highlightIds are handled by the two small effects below — a
+    // full re-layout for either would be an all-or-nothing redraw. theme IS a
+    // full-redraw dependency on purpose (a rare user action): colors are
+    // written as literal attributes rather than CSS var references so the PNG
+    // export path — which serializes the SVG standalone, where CSS variables
+    // wouldn't resolve — stays correctly colored. Consumers pass stable
+    // callbacks for onSelect/onAddChild/onToggleAncestry.
   }, [
     root,
     onSelect,
     showConverging,
-    magnify,
+    onAddChild,
     theme,
-    highlightIds,
     spousesWithParents,
     expandedFamily,
     onToggleAncestry,
     orientation,
   ]);
 
+  // Magnify mode changes only rebind the hover handlers on the persistent
+  // <svg> — no re-layout, no O(n) DOM rebuild.
+  useEffect(() => {
+    magnifyRef.current = magnify;
+    applyMagnifyRef.current?.(magnify);
+  }, [magnify]);
+
+  // Relationship-path highlight changes only swap rings on the recorded node
+  // groups — no re-layout, no O(n) DOM rebuild.
+  useEffect(() => {
+    applyHighlights();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [highlightIds]);
+
   return <svg ref={svgRef} className="h-full w-full" />;
 }
 
 /** Build a link's full SVG path, distorting every point through `D` (identity by
  * default). One path per link so the fisheye can update it with a single attr.
+ *
+ * `horizontal` is passed in (not read from the HORIZONTAL global) because this
+ * runs at EVENT time from the fisheye handlers, after another chart instance
+ * may have overwritten the layout-pass globals.
  *
  * When `anchorToCenter` is set (fisheye mode), endpoints that touch a box are
  * drawn to the box's CENTRE rather than its edge; the scaled box (drawn on top)
@@ -1230,16 +1397,19 @@ export default function DescendantPyramid({
 function linkPath(
   l: Link,
   D: Distort,
+  horizontal: boolean,
   anchorToCenter = false
 ): { d: string; width: number; childD?: string } {
   const P = (x: number, y: number) => {
     const p = D(x, y);
     // Map layout space → screen: swap axes for the left-to-right (horizontal) layout.
-    return HORIZONTAL ? `${p[1]},${p[0]}` : `${p[0]},${p[1]}`;
+    return horizontal ? `${p[1]},${p[0]}` : `${p[0]},${p[1]}`;
   };
+  // Fixed allowance along the generation axis (the widest possible card).
+  const gen = horizontal ? MAX_NODE_WIDTH : MAX_NODE_H;
   // `ev` pushes a box-top endpoint to (approximately) its centre in fisheye
   // mode; box-edge anchors otherwise come from per-link stored extents.
-  const ev = anchorToCenter ? genExt() / 2 : 0;
+  const ev = anchorToCenter ? gen / 2 : 0;
   if (l.kind === "family") {
     const sibY = l.childTopY - SIB_BAR_DROP;
     // Extend the sibling bar back to the source x so an off-centre source (a
@@ -1279,11 +1449,12 @@ function linkPath(
       // below their shared row; for different generations it keeps the rail in the
       // channel under the higher partner so its riser never dives through that partner's
       // own children. Each riser enters its box off-centre (never traces the box's
-      // centred drop); same-source risers (a person with two far spouses) splay by lane.
-      const topGen = l.ay <= l.by ? (l.aGen ?? genExt()) : (l.bGen ?? genExt());
+      // centred drop); same-box risers splay by lane on BOTH ends — either box
+      // can be the one two cross-links share.
+      const topGen = l.ay <= l.by ? (l.aGen ?? gen) : (l.bGen ?? gen);
       const railY = Math.min(l.ay, l.by) + topGen / 2 + 18 + lane * 26;
       const aR = l.ax + (l.ax <= l.bx ? 12 : -12) + lane * 8;
-      const bR = l.bx + (l.bx < l.ax ? 14 : -14);
+      const bR = l.bx + (l.bx < l.ax ? 14 : -14) + lane * 8;
       return {
         d: `M${P(aR, l.ay)}L${P(aR, railY)}L${P(bR, railY)}L${P(bR, l.by)}`,
         width: 2,
@@ -1296,9 +1467,11 @@ function linkPath(
     const railY = sibY - 24 - lane * 12; // the marriage rail, just above the sibling bar
     // The rail reaches from the children across to both parents; each parent connects
     // with a vertical riser entering off-centre (so it never traces that box's own
-    // centred drop); the children hang from the rail. One connected gold comb.
-    const aR = l.ax + (l.ax >= cmid ? -14 : 14);
-    const bR = l.bx + (l.bx >= cmid ? -14 : 14);
+    // centred drop) and splayed by lane (so two cross-links sharing a parent box
+    // never run collinear risers); the children hang from the rail. One connected
+    // gold comb.
+    const aR = l.ax + (l.ax >= cmid ? -14 : 14) + lane * 8;
+    const bR = l.bx + (l.bx >= cmid ? -14 : 14) + lane * 8;
     const left = Math.min(cmid, aR, bR);
     const right = Math.max(cmid, aR, bR);
     let d = `M${P(left, railY)}L${P(right, railY)}`;
@@ -1321,11 +1494,11 @@ function linkPath(
   const right = Math.max(...xs);
   // Gold: husband riser + bar + the drops to WIVES (marriage). Blue (childD): the
   // drops to CHILDREN (family).
-  const hEv = anchorToCenter ? (l.husbandExt ?? genExt()) / 2 : 0;
+  const hEv = anchorToCenter ? (l.husbandExt ?? gen) / 2 : 0;
   let d = `M${P(riserX, l.husbandTopY + hEv)}L${P(riserX, l.barY)}M${P(left, l.barY)}L${P(right, l.barY)}`;
   let childD = "";
   for (const dr of l.drops) {
-    const dEv = anchorToCenter && dr.wife ? (dr.ext ?? genExt()) / 2 : 0;
+    const dEv = anchorToCenter && dr.wife ? (dr.ext ?? gen) / 2 : 0;
     const seg = `M${P(dr.x, l.barY)}L${P(dr.x, dr.toY + dEv)}`;
     if (dr.wife) d += seg;
     else childD += seg;

@@ -33,11 +33,26 @@ router = APIRouter(prefix="/public/{token}", tags=["public"])
 _PUBLIC_HITS: dict[str, list[float]] = {}
 _RATE_WINDOW = 60.0
 _RATE_MAX = 120  # requests per IP per window
+# Opportunistic GC threshold: past this many keys, expired entries are swept.
+# Without it, every IP ever seen keeps an entry forever — attacker-growable
+# memory on an unauthenticated surface (rotate source IPs).
+_RATE_SWEEP_AT = 1024
+
+
+def _sweep_public_hits(now: float) -> None:
+    """Drop every key whose newest hit is outside the window. Timestamps are
+    appended in order, so the last one is the newest."""
+    for key in [
+        k for k, ts in _PUBLIC_HITS.items() if not ts or now - ts[-1] >= _RATE_WINDOW
+    ]:
+        del _PUBLIC_HITS[key]
 
 
 def _rate_limit(request: Request) -> None:
     key = request.client.host if request.client else "unknown"
     now = time.monotonic()
+    if len(_PUBLIC_HITS) >= _RATE_SWEEP_AT:
+        _sweep_public_hits(now)
     hits = [t for t in _PUBLIC_HITS.get(key, []) if now - t < _RATE_WINDOW]
     if len(hits) >= _RATE_MAX:
         _PUBLIC_HITS[key] = hits
@@ -72,17 +87,18 @@ def public_tree(tree: FamilyTree = Depends(get_shared_tree)) -> PublicTreeOut:
 @router.get("/individuals", response_model=list[PublicIndividualOut])
 def public_individuals(
     tree: FamilyTree = Depends(get_shared_tree), db: Session = Depends(get_db)
-) -> list[Individual]:
+) -> list[PublicIndividualOut]:
     # PublicIndividualOut deliberately drops notes, places, gedcom_xref,
     # photo_url, timestamps and tree_id — an unauthenticated caller sees only
-    # what the read-only chart renders.
-    return list(
-        db.scalars(
-            select(Individual)
-            .where(Individual.tree_id == tree.id)
-            .order_by(Individual.surname, Individual.given_name)
-        )
+    # what the read-only chart renders. SELECT exactly the DTO's columns so the
+    # dropped blobs (free-text notes, base64 photos) never even cross the
+    # database wire for this hot unauthenticated route.
+    stmt = (
+        select(*(getattr(Individual, name) for name in PublicIndividualOut.model_fields))
+        .where(Individual.tree_id == tree.id)
+        .order_by(Individual.surname, Individual.given_name)
     )
+    return [PublicIndividualOut.model_validate(dict(row._mapping)) for row in db.execute(stmt)]
 
 
 @router.get("/families", response_model=list[PublicFamilyOut])

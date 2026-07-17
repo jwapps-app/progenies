@@ -1,4 +1,4 @@
-import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api } from "../api/client";
 import DescendantPyramid, {
@@ -8,7 +8,7 @@ import AncestorChart from "../components/visualizations/AncestorChart";
 import Modal from "../components/ui/Modal";
 import ThemeToggle from "../components/ui/ThemeToggle";
 import { useTheme } from "../store/theme";
-import { describeRelationship, relationshipPath } from "../utils/relationship";
+import { buildParentMap, describeRelationship, relationshipPath } from "../utils/relationship";
 import { findWarnings } from "../utils/warnings";
 import { exportChartPng } from "../utils/exportImage";
 import { findDuplicates, personSummary } from "../utils/duplicates";
@@ -77,7 +77,9 @@ export default function TreeViewPage() {
   const [error, setError] = useState<string | null>(null);
   // This user's access to the tree: "owner" | "editor" | "viewer". A "viewer"
   // (read-only collaborator) sees the tree but every editing control is hidden.
-  const [treeRole, setTreeRole] = useState<string>("owner");
+  // Defaults to "viewer" (fail closed) until getTree reports the real role —
+  // defaulting to "owner" briefly offered edit controls on shared trees.
+  const [treeRole, setTreeRole] = useState<string>("viewer");
   const [ownerUsername, setOwnerUsername] = useState<string | null>(null);
   const [treeName, setTreeName] = useState<string>("");
   const canEdit = treeRole !== "viewer";
@@ -257,6 +259,12 @@ export default function TreeViewPage() {
     setSummary(null);
     setIndividuals([]);
     setFamilies([]);
+    // Reset the role to "viewer" (fail closed) and clear the previous tree's
+    // name/owner — otherwise a shared tree shows the LAST tree's edit controls
+    // until (or forever if) getTree resolves.
+    setTreeRole("viewer");
+    setOwnerUsername(null);
+    setTreeName("");
     void loadData(true);
     // Tree metadata (name/role/owner) changes only on switch, not on edits.
     if (treeId) {
@@ -269,7 +277,10 @@ export default function TreeViewPage() {
           setOwnerUsername(tree.owner_username);
           setTreeName(tree.name);
         })
-        .catch(() => {});
+        .catch((err) => {
+          if (treeIdRef.current === tid)
+            setError(err instanceof Error ? err.message : "Failed to load tree details");
+        });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [treeId]);
@@ -290,21 +301,50 @@ export default function TreeViewPage() {
   // bloodline parent already shown when possible.
   const rootParentId = rootId ? parentOf(rootId, families) : null;
 
+  // What each cached chart was fetched for ("rootId:reloadKey") — lets a
+  // view-mode toggle reuse the data already in state instead of refetching it.
+  const treeDataFor = useRef<string | null>(null);
+  const ancestorDataFor = useRef<string | null>(null);
+
   // Fetch the chart data for the current view (descendants or ancestors) whenever
   // the root, view mode, or data changes.
   useEffect(() => {
     if (!treeId || !rootId) {
       setTreeData(null);
       setAncestorData(null);
+      treeDataFor.current = null;
+      ancestorDataFor.current = null;
       return;
+    }
+    // Drop a chart fetched for a DIFFERENT root, so the previous root's tree
+    // doesn't stay on screen while the new one loads.
+    setTreeData((d) => (d && d.id !== rootId ? null : d));
+    setAncestorData((d) => (d && d.id !== rootId ? null : d));
+    const want = `${rootId}:${reloadKey}`;
+    if ((viewMode === "ancestors" ? ancestorDataFor.current : treeDataFor.current) === want) {
+      return; // this root's data for this mode is already in state
     }
     let cancelled = false;
     const onErr = (err: unknown) =>
       !cancelled && setError(err instanceof Error ? err.message : "Failed to load chart");
     if (viewMode === "ancestors") {
-      api.ancestors(treeId, rootId).then((d) => !cancelled && setAncestorData(d)).catch(onErr);
+      api
+        .ancestors(treeId, rootId)
+        .then((d) => {
+          if (cancelled) return;
+          ancestorDataFor.current = want;
+          setAncestorData(d);
+        })
+        .catch(onErr);
     } else {
-      api.descendants(treeId, rootId).then((d) => !cancelled && setTreeData(d)).catch(onErr);
+      api
+        .descendants(treeId, rootId)
+        .then((d) => {
+          if (cancelled) return;
+          treeDataFor.current = want;
+          setTreeData(d);
+        })
+        .catch(onErr);
     }
     return () => {
       cancelled = true;
@@ -335,7 +375,11 @@ export default function TreeViewPage() {
     api
       .getIndividual(treeId, selectedId)
       .then((d) => !cancelled && setSelectedDetail(d))
-      .catch(() => {});
+      .catch(
+        (err) =>
+          !cancelled &&
+          setError(err instanceof Error ? err.message : "Failed to load person details")
+      );
     return () => {
       cancelled = true;
     };
@@ -980,6 +1024,7 @@ export default function TreeViewPage() {
   // the spouse's OWN descendants (already shown in the main tree).
   async function handleToggleAncestry(spouseId: string) {
     if (!treeId) return;
+    const tid = treeId;
     if (expandedFamily[spouseId]) {
       setExpandedFamily((m) => {
         const next = { ...m };
@@ -1002,11 +1047,13 @@ export default function TreeViewPage() {
       }
     };
     try {
-      const tree = await api.descendants(treeId, path[path.length - 1]);
+      const tree = await api.descendants(tid, path[path.length - 1]);
+      if (treeIdRef.current !== tid) return; // stale response for another tree
       prune(tree);
       setExpandedFamily((m) => ({ ...m, [spouseId]: tree }));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load family");
+      if (treeIdRef.current === tid)
+        setError(err instanceof Error ? err.message : "Failed to load family");
     }
   }
 
@@ -1028,7 +1075,11 @@ export default function TreeViewPage() {
     api
       .listDismissedWarnings(treeId)
       .then((keys) => !cancelled && setDismissedWarningKeys(new Set(keys)))
-      .catch(() => {});
+      .catch(
+        (err) =>
+          !cancelled &&
+          setError(err instanceof Error ? err.message : "Failed to load dismissed warnings")
+      );
     return () => {
       cancelled = true;
     };
@@ -1081,7 +1132,11 @@ export default function TreeViewPage() {
         if (!cancelled)
           setDismissedPairs(new Set(pairs.map((p) => pairKey(p.individual_a, p.individual_b))));
       })
-      .catch(() => {});
+      .catch(
+        (err) =>
+          !cancelled &&
+          setError(err instanceof Error ? err.message : "Failed to load dismissed duplicates")
+      );
     return () => {
       cancelled = true;
     };
@@ -1167,6 +1222,9 @@ export default function TreeViewPage() {
   const onChartSelect = useStableCallback(handleSelect);
   const onChartAddChild = useStableCallback(addChildToCouple);
   const onChartToggleAncestry = useStableCallback(handleToggleAncestry);
+  // Stable so the memoized root-person <select> isn't re-diffed by unrelated
+  // re-renders (e.g. each keystroke in the search box).
+  const onRootChange = useCallback((id: string | null) => setRootId(id), []);
 
   // "Husband ♂ + Wife ♀" label for the couple-picker, with unknown/empty slots.
   function coupleLabel(family: Family): string {
@@ -1236,17 +1294,7 @@ export default function TreeViewPage() {
               ⌂ Whole tree
             </button>
             <label className="text-sm font-medium text-gray-600 dark:text-slate-300">Root person</label>
-            <select
-              value={rootId ?? ""}
-              onChange={(e) => setRootId(e.target.value || null)}
-              className="rounded-lg border border-gray-300 dark:border-slate-600 px-3 py-1.5 text-sm focus:border-brand focus:outline-none dark:bg-slate-700 dark:text-slate-100"
-            >
-              {sortedIndividuals.map((indi) => (
-                <option key={indi.id} value={indi.id}>
-                  {displayName(indi)}
-                </option>
-              ))}
-            </select>
+            <RootPersonSelect people={sortedIndividuals} value={rootId ?? ""} onChange={onRootChange} />
             <div
               className="flex rounded-lg bg-gray-100 p-0.5 text-xs font-medium dark:bg-slate-700"
               title="Show descendants (down) or ancestors (up)"
@@ -1432,6 +1480,7 @@ export default function TreeViewPage() {
           <span>
             Imported {summary.individuals_imported} individuals, {summary.families_imported} families,{" "}
             {summary.children_links} parent-child links
+            {summary.sources_imported > 0 && `, ${summary.sources_imported} source(s)`}
             {summary.unknown_spouses_created > 0 &&
               `, created ${summary.unknown_spouses_created} unknown spouse placeholder(s)`}
             .{summary.warnings.length > 0 && ` ${summary.warnings.length} warning(s).`}
@@ -1866,17 +1915,21 @@ export default function TreeViewPage() {
                   className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand focus:outline-none dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100"
                 >
                   <option value="">— choose a person —</option>
-                  {sortedIndividuals
-                    .filter(
-                      (i) =>
-                        i.id !== selected.id &&
-                        !spouseFamiliesOf(selected.id).some((sf) => sf.coParent?.id === i.id)
-                    )
-                    .map((i) => (
-                      <option key={i.id} value={i.id}>
-                        {displayName(i)}
-                      </option>
-                    ))}
+                  {(() => {
+                    // Build the excluded set ONCE — re-running spouseFamiliesOf
+                    // inside the filter was O(people × families) per render.
+                    const excluded = new Set<string>([selected.id]);
+                    for (const sf of spouseFamiliesOf(selected.id)) {
+                      if (sf.coParent) excluded.add(sf.coParent.id);
+                    }
+                    return sortedIndividuals
+                      .filter((i) => !excluded.has(i.id))
+                      .map((i) => (
+                        <option key={i.id} value={i.id}>
+                          {displayName(i)}
+                        </option>
+                      ));
+                  })()}
                 </select>
               </label>
               <button
@@ -2252,6 +2305,34 @@ function Centered({ children }: { children: React.ReactNode }) {
   return <div className="flex h-full items-center justify-center text-gray-500 dark:text-slate-400">{children}</div>;
 }
 
+/** The toolbar's root-person picker. Memoized — with thousands of people the
+ * option list is expensive to re-diff, and typing in the (unrelated) search box
+ * re-renders the page on every keystroke. Only re-renders when the people list,
+ * selected root, or (stable) onChange actually change. */
+const RootPersonSelect = memo(function RootPersonSelect({
+  people,
+  value,
+  onChange,
+}: {
+  people: Individual[];
+  value: string;
+  onChange: (id: string | null) => void;
+}) {
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value || null)}
+      className="rounded-lg border border-gray-300 dark:border-slate-600 px-3 py-1.5 text-sm focus:border-brand focus:outline-none dark:bg-slate-700 dark:text-slate-100"
+    >
+      {people.map((indi) => (
+        <option key={indi.id} value={indi.id}>
+          {displayName(indi)}
+        </option>
+      ))}
+    </select>
+  );
+});
+
 function PanelButton({
   children,
   onClick,
@@ -2298,6 +2379,9 @@ function RelationshipPanel({
 }) {
   const refId = ids[0] ?? "";
   const setAt = (i: number, val: string) => setIds(ids.map((x, j) => (j === i ? val : x)));
+  // One parent map shared by every row — describeRelationship/relationshipPath
+  // would otherwise each rebuild it per row per render.
+  const parentMap = useMemo(() => buildParentMap(families), [families]);
 
   return (
     <div className="space-y-3 text-sm">
@@ -2305,8 +2389,9 @@ function RelationshipPanel({
         Pick a reference person, then one or more others to see how each relates to them.
       </p>
       {ids.map((id, i) => {
-        const rel = i > 0 && refId && id ? describeRelationship(refId, id, byId, families) : null;
-        const path = rel ? relationshipPath(refId, id, families) : [];
+        const rel =
+          i > 0 && refId && id ? describeRelationship(refId, id, byId, families, parentMap) : null;
+        const path = rel ? relationshipPath(refId, id, families, parentMap) : [];
         return (
           <div key={i}>
             <div className="flex items-center gap-2">

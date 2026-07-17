@@ -20,6 +20,39 @@ router = APIRouter(prefix="/api/trees/{tree_id}", tags=["gedcom"])
 MAX_IMPORT_BYTES = 25 * 1024 * 1024
 
 
+def _guarded_import(
+    db: Session, tree: FamilyTree, content: str, filename: str | None, force: bool
+) -> ImportSummary:
+    """Duplicate-hash check + import as ONE synchronous unit.
+
+    Re-importing the same file silently doubles every person and family (an
+    easy accidental double-tap). The archive already records each import's
+    hash — reject an exact repeat unless the caller explicitly forces it.
+    The hash lookup lives here, not in the async route, because it is a
+    blocking database call (it would stall the event loop) — and running the
+    check and the import in the same transaction narrows the window where two
+    identical concurrent uploads both pass the check.
+    """
+    if not force:
+        file_hash = hashlib.sha256(content.encode("utf-8", "replace")).hexdigest()
+        already = db.scalar(
+            select(GedcomFile.id).where(
+                GedcomFile.tree_id == tree.id,
+                GedcomFile.direction == "import",
+                GedcomFile.file_hash == file_hash,
+            )
+        )
+        if already is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "This exact file was already imported into this tree — importing it "
+                    "again would duplicate every person. Add ?force=true to import anyway."
+                ),
+            )
+    return import_gedcom(db, tree, content, filename)
+
+
 @router.post("/import", response_model=ImportSummary)
 async def import_tree(
     file: UploadFile = File(...),
@@ -46,29 +79,10 @@ async def import_tree(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="File does not appear to be a valid GEDCOM document",
         )
-    # Re-importing the same file silently doubles every person and family (an
-    # easy accidental double-tap). The archive already records each import's
-    # hash — reject an exact repeat unless the caller explicitly forces it.
-    file_hash = hashlib.sha256(content.encode("utf-8", "replace")).hexdigest()
-    if not force:
-        already = db.scalar(
-            select(GedcomFile.id).where(
-                GedcomFile.tree_id == tree.id,
-                GedcomFile.direction == "import",
-                GedcomFile.file_hash == file_hash,
-            )
-        )
-        if already is not None:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=(
-                    "This exact file was already imported into this tree — importing it "
-                    "again would duplicate every person. Add ?force=true to import anyway."
-                ),
-            )
-    # The parse + thousands of inserts are synchronous; run them off the event
-    # loop so a large import doesn't stall every other request.
-    return await run_in_threadpool(import_gedcom, db, tree, content, file.filename)
+    # The duplicate check + parse + thousands of inserts are synchronous; run
+    # them off the event loop so a large import doesn't stall every other
+    # request. HTTPException raised inside propagates normally.
+    return await run_in_threadpool(_guarded_import, db, tree, content, file.filename, force)
 
 
 @router.get("/export")

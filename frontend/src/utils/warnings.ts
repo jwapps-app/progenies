@@ -80,7 +80,10 @@ export function findWarnings(individuals: Individual[], families: Family[]): Tre
     }
   }
 
-  // 4. Ancestry loops: a person who is their own ancestor.
+  // 4. Ancestry loops: a person who is their own ancestor — i.e. anyone on a
+  //    cycle in the child→parent graph. One DFS pass (iterative Tarjan SCC, so
+  //    deep lineages can't overflow the call stack) finds every such person in
+  //    O(n+E); the previous version ran a BFS per individual, O(n×E).
   const parents = new Map<string, string[]>();
   for (const f of families) {
     const ps = [f.husband_id, f.wife_id].filter((p): p is string => !!p);
@@ -91,30 +94,61 @@ export function findWarnings(individuals: Individual[], families: Family[]): Tre
     }
   }
   const looped = new Set<string>();
+  const index = new Map<string, number>();
+  const low = new Map<string, number>();
+  const onStack = new Set<string>();
+  const sccStack: string[] = [];
+  let counter = 0;
   for (const start of individuals) {
-    if (looped.has(start.id)) continue;
-    const stack = [start.id];
-    const seen = new Set<string>();
-    while (stack.length) {
-      const cur = stack.pop()!;
-      for (const p of parents.get(cur) ?? []) {
-        if (p === start.id) {
-          looped.add(start.id);
+    if (index.has(start.id)) continue;
+    const work: { id: string; edge: number }[] = [{ id: start.id, edge: 0 }];
+    while (work.length) {
+      const frame = work[work.length - 1];
+      const { id } = frame;
+      if (frame.edge === 0) {
+        index.set(id, counter);
+        low.set(id, counter);
+        counter += 1;
+        sccStack.push(id);
+        onStack.add(id);
+      }
+      const edges = parents.get(id) ?? [];
+      let descended = false;
+      while (frame.edge < edges.length) {
+        const p = edges[frame.edge++];
+        if (!index.has(p)) {
+          work.push({ id: p, edge: 0 });
+          descended = true;
           break;
         }
-        if (!seen.has(p)) {
-          seen.add(p);
-          stack.push(p);
+        if (onStack.has(p)) low.set(id, Math.min(low.get(id)!, index.get(p)!));
+      }
+      if (descended) continue;
+      work.pop();
+      const caller = work[work.length - 1];
+      if (caller) low.set(caller.id, Math.min(low.get(caller.id)!, low.get(id)!));
+      if (low.get(id) === index.get(id)) {
+        // Root of a strongly connected component — pop it. Members of a
+        // multi-person component (or a self-loop) are their own ancestors.
+        const scc: string[] = [];
+        for (;;) {
+          const v = sccStack.pop()!;
+          onStack.delete(v);
+          scc.push(v);
+          if (v === id) break;
+        }
+        if (scc.length > 1 || (parents.get(id) ?? []).includes(id)) {
+          for (const v of scc) looped.add(v);
         }
       }
-      if (looped.has(start.id)) break;
     }
   }
-  for (const id of looped) {
+  for (const p of individuals) {
+    if (!looped.has(p.id)) continue;
     warnings.push({
-      key: `ancestry-loop:${id}`,
-      personId: id,
-      message: `${name(id)} is listed as their own ancestor (a loop in the tree).`,
+      key: `ancestry-loop:${p.id}`,
+      personId: p.id,
+      message: `${name(p.id)} is listed as their own ancestor (a loop in the tree).`,
     });
   }
 

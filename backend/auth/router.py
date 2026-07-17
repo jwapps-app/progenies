@@ -32,6 +32,10 @@ REFRESH_COOKIE = "refresh_token"
 _FAILED_LOGINS: dict[str, list[float]] = {}
 _THROTTLE_WINDOW = 300.0
 _THROTTLE_MAX_FAILURES = 10
+# Opportunistic GC threshold: past this many keys, expired entries are swept.
+# Without it, every distinct username/IP ever attempted keeps an entry forever
+# — attacker-growable memory (rotate usernames from a botnet).
+_THROTTLE_SWEEP_AT = 1024
 # Bootstrap registration is serialized on this Postgres advisory-lock key so two
 # concurrent first-registrations can't both slip past the "no accounts yet"
 # check and each create an administrator.
@@ -42,15 +46,31 @@ _REGISTER_LOCK_KEY = 0x70726F67  # "prog"
 _TIMING_PAD_HASH = hash_password("timing-pad-not-a-real-password")
 
 
+def _sweep_failed_logins(now: float) -> None:
+    """Drop every key whose newest failure is outside the window. Timestamps
+    are appended in order, so the last one is the newest."""
+    for key in [
+        k for k, ts in _FAILED_LOGINS.items() if not ts or now - ts[-1] >= _THROTTLE_WINDOW
+    ]:
+        del _FAILED_LOGINS[key]
+
+
 def _throttled(key: str) -> bool:
     now = time.monotonic()
     attempts = [t for t in _FAILED_LOGINS.get(key, []) if now - t < _THROTTLE_WINDOW]
-    _FAILED_LOGINS[key] = attempts
+    if attempts:
+        _FAILED_LOGINS[key] = attempts
+    else:
+        # Never store an empty list — checking a key must not insert it.
+        _FAILED_LOGINS.pop(key, None)
     return len(attempts) >= _THROTTLE_MAX_FAILURES
 
 
 def _record_failure(key: str) -> None:
-    _FAILED_LOGINS.setdefault(key, []).append(time.monotonic())
+    now = time.monotonic()
+    if len(_FAILED_LOGINS) >= _THROTTLE_SWEEP_AT:
+        _sweep_failed_logins(now)
+    _FAILED_LOGINS.setdefault(key, []).append(now)
 
 
 def _set_refresh_cookie(response: Response, token: str) -> None:

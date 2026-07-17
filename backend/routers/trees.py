@@ -9,6 +9,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from auth.deps import get_accessible_tree, get_current_user, get_owned_tree, tree_role
@@ -138,9 +139,19 @@ def upsert_share(
     if share is None:
         share = TreeShare(tree_id=tree.id, user_id=payload.user_id, role=payload.role)
         db.add(share)
+        try:
+            db.commit()
+        except IntegrityError:
+            # Concurrent grant for the same user slipped past the check — the
+            # route is idempotent, so update the existing row instead of 500ing.
+            db.rollback()
+            share = db.get(TreeShare, {"tree_id": tree.id, "user_id": payload.user_id})
+            if share is not None:
+                share.role = payload.role
+                db.commit()
     else:
         share.role = payload.role
-    db.commit()
+        db.commit()
     return ShareOut(user_id=target.id, username=target.username, role=payload.role)
 
 

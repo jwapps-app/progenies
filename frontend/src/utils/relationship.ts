@@ -16,6 +16,9 @@ interface ParentEdge {
   gap: boolean;
 }
 
+/** child id → parent edges, as built by {@link buildParentMap}. */
+export type ParentMap = Map<string, ParentEdge[]>;
+
 interface AncHit {
   dist: number;
   viaGap: boolean;
@@ -74,8 +77,11 @@ function nieceNephewTerm(gen: number, sex: string | null): string {
   return `${greats(gen - 3)}grand-${base}`;
 }
 
-function buildParentMap(families: Family[]): Map<string, ParentEdge[]> {
-  const map = new Map<string, ParentEdge[]>();
+/** Build the child→parents map once and pass it to {@link describeRelationship}
+ * / {@link relationshipPath} when calling them repeatedly (e.g. per row in the
+ * relationship panel) — each call would otherwise rebuild it from scratch. */
+export function buildParentMap(families: Family[]): ParentMap {
+  const map: ParentMap = new Map();
   for (const fam of families) {
     const parents = [fam.husband_id, fam.wife_id].filter((p): p is string => !!p);
     for (const child of fam.children) {
@@ -144,9 +150,9 @@ function inLawLabel(
   aId: string,
   bId: string,
   B: Individual | undefined,
-  families: Family[]
+  families: Family[],
+  parentMap: ParentMap
 ): string | null {
-  const parentMap = buildParentMap(families);
   const sex = B?.sex ?? null;
   const bSpouses = spouseIdsOf(bId, families);
   const aSpouses = spouseIdsOf(aId, families);
@@ -185,9 +191,13 @@ function ancestorPaths(start: string, parentMap: Map<string, ParentEdge[]>): Map
 
 /** The chain of person ids connecting A and B through their nearest common
  * ancestor (A … ancestor … B), for highlighting on the chart. Empty if none. */
-export function relationshipPath(aId: string, bId: string, families: Family[]): string[] {
+export function relationshipPath(
+  aId: string,
+  bId: string,
+  families: Family[],
+  parentMap: ParentMap = buildParentMap(families)
+): string[] {
   if (aId === bId) return [aId];
-  const parentMap = buildParentMap(families);
   const pa = ancestorPaths(aId, parentMap);
   const pb = ancestorPaths(bId, parentMap);
   let best: { c: string; total: number } | null = null;
@@ -211,9 +221,8 @@ function bloodLabel(
   aId: string,
   bId: string,
   B: Individual | undefined,
-  families: Family[]
+  parentMap: ParentMap
 ): { label: string; approximate: boolean } | null {
-  const parentMap = buildParentMap(families);
   const ancA = ancestors(aId, parentMap);
   const ancB = ancestors(bId, parentMap);
 
@@ -267,7 +276,8 @@ export function describeRelationship(
   aId: string,
   bId: string,
   byId: Map<string, Individual>,
-  families: Family[]
+  families: Family[],
+  parentMap: ParentMap = buildParentMap(families)
 ): RelationshipResult {
   const A = byId.get(aId);
   const B = byId.get(bId);
@@ -278,7 +288,7 @@ export function describeRelationship(
     return { label: "same person", sentence: `${nameA} is the same person.`, approximate: false };
   }
 
-  const blood = bloodLabel(aId, bId, B, families);
+  const blood = bloodLabel(aId, bId, B, parentMap);
   const married = families.some(
     (f) =>
       (f.husband_id === aId && f.wife_id === bId) || (f.husband_id === bId && f.wife_id === aId)
@@ -296,7 +306,7 @@ export function describeRelationship(
   }
 
   if (!blood) {
-    const inLaw = inLawLabel(aId, bId, B, families);
+    const inLaw = inLawLabel(aId, bId, B, families, parentMap);
     if (inLaw) {
       return { label: inLaw, sentence: `${nameB} is ${nameA}'s ${inLaw}.`, approximate: false };
     }

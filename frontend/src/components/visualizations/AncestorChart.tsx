@@ -1,7 +1,15 @@
 import { useEffect, useRef } from "react";
 import * as d3 from "d3";
 import type { AncestorNode } from "../../types";
-import { cardSize, drawCard, readPalette } from "./chartCard";
+import {
+  MAX_NODE_H,
+  cardSize,
+  drawCard,
+  drawHighlightRing,
+  readPalette,
+  setupChartViewport,
+} from "./chartCard";
+import type { CardSize, Palette } from "./chartCard";
 
 interface Props {
   root: AncestorNode;
@@ -13,8 +21,8 @@ interface Props {
   highlightIds?: Set<string>;
 }
 
-const MAX_NODE_H = 60; // tallest autosized card
 const ROW_HEIGHT = MAX_NODE_H + 64; // vertical distance between generations
+
 const H_GAP = 30; // horizontal gap between adjacent ancestors
 
 /**
@@ -25,10 +33,33 @@ const H_GAP = 30; // horizontal gap between adjacent ancestors
  */
 export default function AncestorChart({ root, onSelect, theme, highlightIds }: Props) {
   const svgRef = useRef<SVGSVGElement | null>(null);
-  // Preserve the user's pan/zoom across redraws of the SAME root (edits,
-  // theme/highlight changes); only fit-to-view when the root changes.
+  // Preserve the user's pan/zoom across redraws of the SAME root (edits, theme
+  // changes); only fit-to-view when the root changes.
   const savedTransform = useRef<d3.ZoomTransform | null>(null);
   const viewKey = useRef<string>("");
+  // Per-person node group + card size, recorded by the main draw so the
+  // highlight effect can swap rings without a re-layout. A person can appear
+  // more than once (pedigree collapse duplicates shared ancestors), hence the
+  // array values.
+  const nodeByPerson = useRef(
+    new Map<string, { el: d3.Selection<SVGGElement, unknown, null, undefined>; size: CardSize }[]>()
+  );
+  const paletteRef = useRef<Palette | null>(null);
+  // Read through a ref so the main draw (which deliberately does NOT depend on
+  // highlightIds) can re-apply the current rings after a rebuild.
+  const highlightRef = useRef(highlightIds);
+  highlightRef.current = highlightIds;
+
+  const applyHighlights = () => {
+    const svgEl = svgRef.current;
+    const P = paletteRef.current;
+    if (!svgEl || !P) return;
+    d3.select(svgEl).selectAll("rect.highlight-ring").remove();
+    const ids = highlightRef.current;
+    if (!ids?.size) return;
+    for (const id of ids)
+      for (const e of nodeByPerson.current.get(id) ?? []) drawHighlightRing(e.el, e.size, P);
+  };
 
   useEffect(() => {
     const svgEl = svgRef.current;
@@ -36,6 +67,8 @@ export default function AncestorChart({ root, onSelect, theme, highlightIds }: P
     const svg = d3.select(svgEl);
     svg.selectAll("*").remove();
     const P = readPalette(svgEl);
+    paletteRef.current = P;
+    nodeByPerson.current = new Map();
 
     const hierarchy = d3.hierarchy<AncestorNode>(root, (d) => d.children);
     // Cards autosize, so sibling spacing comes from a separation function over
@@ -58,14 +91,6 @@ export default function AncestorChart({ root, onSelect, theme, highlightIds }: P
 
     const gZoom = svg.append("g");
     const g = gZoom.append("g");
-    const zoom = d3
-      .zoom<SVGSVGElement, unknown>()
-      .scaleExtent([0.1, 2.5])
-      .on("zoom", (event) => {
-        gZoom.attr("transform", event.transform.toString());
-        savedTransform.current = event.transform;
-      });
-    svg.call(zoom);
 
     // Links: each person up to its parents (an inverted fork).
     const linkLayer = g.append("g");
@@ -103,22 +128,16 @@ export default function AncestorChart({ root, onSelect, theme, highlightIds }: P
           if (clickable) onSelect(n.data.id);
         });
       drawCard(gBox, n.data, P);
-      if (highlightIds?.has(n.data.id)) {
-        const cs = cardSize(n.data);
-        gBox
-          .insert("rect", ":first-child")
-          .attr("x", -cs.w / 2 - 4)
-          .attr("y", -cs.h / 2 - 4)
-          .attr("width", cs.w + 8)
-          .attr("height", cs.h + 8)
-          .attr("rx", 11)
-          .attr("fill", "none")
-          .attr("stroke", P.marriage)
-          .attr("stroke-width", 3);
-      }
+      const entry = { el: gBox, size: cardSize(n.data) };
+      const arr = nodeByPerson.current.get(n.data.id);
+      if (arr) arr.push(entry);
+      else nodeByPerson.current.set(n.data.id, [entry]);
     }
+    // Ring the currently-highlighted people (the rebuild wiped any old rings).
+    applyHighlights();
 
-    // Fit to view; re-fit when the available space changes.
+    // Fit to view (or restore the saved pan/zoom); re-fit when the available
+    // space changes.
     let minX = Infinity;
     let maxX = -Infinity;
     let minY = Infinity;
@@ -130,46 +149,29 @@ export default function AncestorChart({ root, onSelect, theme, highlightIds }: P
       minY = Math.min(minY, sy(n) - cs.h / 2);
       maxY = Math.max(maxY, sy(n) + cs.h / 2);
     }
-    const fitToView = () => {
-      const bbox = svgEl.getBoundingClientRect();
-      const vw = bbox.width || 800;
-      const vh = bbox.height || 600;
-      const margin = 60;
-      const w = maxX - minX || 1;
-      const h = maxY - minY || 1;
-      const scale = Math.min(1.2, vw / (w + margin * 2), vh / (h + margin * 2));
-      const tx = vw / 2 - ((minX + maxX) / 2) * scale;
-      const ty = vh / 2 - ((minY + maxY) / 2) * scale;
-      svg.call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
-    };
-    // Same root as the previous draw → restore the user's pan/zoom instead of
-    // yanking them back to the whole-chart fit.
-    if (viewKey.current === root.id && savedTransform.current) {
-      svg.call(zoom.transform, savedTransform.current);
-    } else {
-      viewKey.current = root.id;
-      fitToView();
-    }
-
-    let fitRaf = 0;
-    // ResizeObserver fires once immediately on observe() — skip that initial
-    // callback or it would override the transform we just restored.
-    let firstObserve = true;
-    const resizeObserver = new ResizeObserver(() => {
-      if (firstObserve) {
-        firstObserve = false;
-        return;
-      }
-      cancelAnimationFrame(fitRaf);
-      fitRaf = requestAnimationFrame(fitToView);
+    const vp = setupChartViewport({
+      svgEl,
+      zoomTarget: gZoom,
+      bounds: { minX, maxX, minY, maxY },
+      fitAnchor: "center",
+      savedTransform,
+      viewKey,
+      key: root.id,
     });
-    resizeObserver.observe(svgEl);
 
-    return () => {
-      resizeObserver.disconnect();
-      cancelAnimationFrame(fitRaf);
-    };
-  }, [root, onSelect, theme, highlightIds]);
+    return vp.cleanup;
+    // theme is a full-redraw dependency ON PURPOSE (a rare user action): colors
+    // are written as literal attributes rather than CSS var references so the
+    // PNG export path — which serializes the SVG standalone, where CSS
+    // variables wouldn't resolve — stays correctly colored.
+  }, [root, onSelect, theme]);
+
+  // Relationship-path highlight changes only swap rings on the recorded node
+  // groups — no re-layout, no O(n) DOM rebuild.
+  useEffect(() => {
+    applyHighlights();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [highlightIds]);
 
   return <svg ref={svgRef} className="h-full w-full" />;
 }

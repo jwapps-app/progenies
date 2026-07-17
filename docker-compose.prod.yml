@@ -10,8 +10,13 @@
 #   POSTGRES_PASSWORD  database password for this instance
 # Optional:
 #   HTTP_PORT          host port for the web app (default 8080)
+#   HTTP_BIND          host address to bind the web port to (default 0.0.0.0).
+#                      Hosts running the tunnel/proxy locally can set 127.0.0.1
+#                      so the port isn't reachable from the LAN.
 #   DATA_PATH          host folder for persistent data (default ./data)
-#   APP_NAME           display name (default Progenies)
+#   APP_NAME           backend/API display name (default Progenies). The web
+#                      bundle's name is baked into the image at build time and
+#                      is NOT affected by this variable.
 #   IMAGE_TAG          image tag to deploy (default latest). CI also publishes
 #                      per-commit tags (the git SHA), so a bad deploy can be
 #                      rolled back by pinning IMAGE_TAG to the last good SHA.
@@ -27,9 +32,12 @@
 #   mkdir -p ${DATA_PATH}/backups && chmod 700 ${DATA_PATH}/backups
 
 services:
+  # mem_limit on every service: generous enough to never bite normal use, but
+  # a runaway process can't take the whole host down with it.
   db:
     image: postgres:15-alpine
     restart: unless-stopped
+    mem_limit: 1g
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-progenies}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
@@ -45,6 +53,7 @@ services:
   db-backup:
     image: prodrigestivill/postgres-backup-local:15-alpine
     restart: unless-stopped
+    mem_limit: 512m
     depends_on:
       db:
         condition: service_healthy
@@ -64,6 +73,7 @@ services:
   backend:
     image: ghcr.io/jwapps-app/progenies-backend:${IMAGE_TAG:-latest}
     restart: unless-stopped
+    mem_limit: 1g
     depends_on:
       db:
         condition: service_healthy
@@ -85,10 +95,14 @@ services:
   web:
     image: ghcr.io/jwapps-app/progenies-web:${IMAGE_TAG:-latest}
     restart: unless-stopped
+    mem_limit: 256m
     depends_on:
       - backend
     ports:
-      - "${HTTP_PORT:-8080}:8080"
+      # Binds all interfaces by default (NAS/tunnel setups usually need that).
+      # Set HTTP_BIND=127.0.0.1 when the tunnel/proxy runs on this host so the
+      # port isn't exposed to the LAN.
+      - "${HTTP_BIND:-0.0.0.0}:${HTTP_PORT:-8080}:8080"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO /dev/null http://localhost:8080/ || exit 1"]
       interval: 30s

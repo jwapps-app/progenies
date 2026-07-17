@@ -82,6 +82,35 @@ export interface Family {
   children: ChildRef[];
 }
 
+/** Individual as served by the unauthenticated /public/{token} endpoints.
+ * Deliberately slim — the wire omits tree_id, places, notes, photo, GEDCOM
+ * xref, and timestamps so a share link can never leak them. */
+export interface PublicIndividual {
+  id: string;
+  given_name: string | null;
+  middle_name: string | null;
+  surname: string | null;
+  married_name: string | null;
+  nickname: string | null;
+  sex: string | null;
+  birth_date: string | null;
+  death_date: string | null;
+  age: string | null;
+  is_unknown: boolean;
+}
+
+/** Family as served by the public endpoints — structure only, no dates,
+ * places, notes, or GEDCOM xref. */
+export interface PublicFamily {
+  id: string;
+  husband_id: string | null;
+  wife_id: string | null;
+  marriage_order: number | null;
+  gap: boolean;
+  unmarried: boolean;
+  children: ChildRef[];
+}
+
 export interface TreeUnion {
   spouse: TreeNode | null;
   children: TreeNode[];
@@ -184,15 +213,4 @@ export function displayName(person: NamedPerson | null | undefined): string {
     .join(" ")
     .trim();
   return name || "Unknown";
-}
-
-/** Full name with the birth/maiden surname shown as "née …" when a married name
- * is set — e.g. "Mary Jones née Smith". */
-export function fullNameWithMaiden(person: NamedPerson | null | undefined): string {
-  if (!person) return "Unknown";
-  const base = displayName(person);
-  if (person.married_name && person.surname && person.married_name !== person.surname) {
-    return `${base} née ${person.surname}`;
-  }
-  return base;
 }

@@ -2,10 +2,10 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from auth.deps import get_accessible_tree, get_editable_tree
+from auth.deps import get_accessible_tree, get_editable_tree, require_in_tree
 from database import get_db
 from models import Child, Family, FamilyTree, Individual
 from schemas import ChildRef, FamilyCreate, FamilyOut, FamilyUpdate
@@ -13,28 +13,33 @@ from schemas import ChildRef, FamilyCreate, FamilyOut, FamilyUpdate
 router = APIRouter(prefix="/api/trees/{tree_id}/families", tags=["families"])
 
 
-def _get_family(db: Session, tree: FamilyTree, family_id: uuid.UUID) -> Family:
-    fam = db.get(Family, family_id)
-    if fam is None or fam.tree_id != tree.id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Family not found")
-    return fam
-
-
 def _validate_member(db: Session, tree: FamilyTree, individual_id: uuid.UUID | None) -> None:
     if individual_id is None:
         return
-    indi = db.get(Individual, individual_id)
-    if indi is None or indi.tree_id != tree.id:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Individual {individual_id} not found in this tree",
-        )
+    require_in_tree(
+        db,
+        tree,
+        Individual,
+        individual_id,
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail=f"Individual {individual_id} not found in this tree",
+    )
 
 
 def _sync_children(db: Session, fam: Family, refs: list[ChildRef], tree: FamilyTree) -> None:
     """Replace the family's child links with the provided set."""
     # Validate every referenced child in ONE query (a per-child db.get was N+1).
     if refs:
+        # A person cannot be their own parent: a child ref naming this family's
+        # husband or wife would create a self-loop every tree traversal then
+        # has to defend against.
+        parents = {p for p in (fam.husband_id, fam.wife_id) if p is not None}
+        for ref in refs:
+            if ref.individual_id in parents:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"Individual {ref.individual_id} is a parent in this family and cannot also be its child",
+                )
         wanted = {ref.individual_id for ref in refs}
         found = set(
             db.scalars(
@@ -90,13 +95,15 @@ def create_family(
         # Default to the next position among the bloodline person's marriages.
         anchor_id = payload.husband_id or payload.wife_id
         if anchor_id is not None:
-            existing = db.scalars(
-                select(Family).where(
+            existing = db.scalar(
+                select(func.count())
+                .select_from(Family)
+                .where(
                     Family.tree_id == tree.id,
                     (Family.husband_id == anchor_id) | (Family.wife_id == anchor_id),
                 )
-            ).all()
-            marriage_order = len(existing) + 1
+            )
+            marriage_order = existing + 1
         else:
             marriage_order = 1
     fam = Family(
@@ -125,7 +132,7 @@ def get_family(
     tree: FamilyTree = Depends(get_accessible_tree),
     db: Session = Depends(get_db),
 ) -> Family:
-    return _get_family(db, tree, family_id)
+    return require_in_tree(db, tree, Family, family_id)
 
 
 @router.put("/{family_id}", response_model=FamilyOut)
@@ -135,7 +142,7 @@ def update_family(
     tree: FamilyTree = Depends(get_editable_tree),
     db: Session = Depends(get_db),
 ) -> Family:
-    fam = _get_family(db, tree, family_id)
+    fam = require_in_tree(db, tree, Family, family_id)
     data = payload.model_dump(exclude_unset=True)
     children = data.pop("children", None)
     if "husband_id" in data:
@@ -157,6 +164,6 @@ def delete_family(
     tree: FamilyTree = Depends(get_editable_tree),
     db: Session = Depends(get_db),
 ) -> None:
-    fam = _get_family(db, tree, family_id)
+    fam = require_in_tree(db, tree, Family, family_id)
     db.delete(fam)
     db.commit()
