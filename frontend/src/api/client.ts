@@ -9,17 +9,21 @@
  *
  * Resolution order:
  * 1. VITE_API_BASE_URL, when set (API on a different domain).
- * 2. Same origin, when the page is served on a standard port (80/443) — the
- *    production setup, where the web server proxies /api and /auth to the
- *    backend on one domain.
- * 3. Otherwise (dev server on :5173, opened at localhost or a LAN IP) the same
- *    host on port 8000, so no per-host configuration is needed.
+ * 2. A PRODUCTION build always uses the same origin: that bundle is only ever
+ *    served by the web container, whose nginx proxies /api, /auth and /public
+ *    to the backend. The port the site happens to be published on is
+ *    irrelevant — http://nas.lan:8091 must work exactly like https://app.example.
+ *    (This used to key off `window.location.port === ""`, which silently sent
+ *    the API to port 8000 whenever production was reached on a non-standard
+ *    port — a port the prod stack never publishes, so every request failed.)
+ * 3. A DEV build (vite dev on :5173) talks to the backend on port 8000 of the
+ *    same host, so no per-host configuration is needed on the LAN.
  */
 const ENV_BASE = import.meta.env.VITE_API_BASE_URL?.trim();
 const BASE_URL =
   ENV_BASE && ENV_BASE.length > 0
     ? ENV_BASE
-    : window.location.port === ""
+    : import.meta.env.PROD
       ? ""
       : `${window.location.protocol}//${window.location.hostname}:8000`;
 

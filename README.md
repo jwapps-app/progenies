@@ -35,6 +35,29 @@ Register an account in the UI, create a tree, then **Import GEDCOM** to load a
 person to re-root, scroll to zoom, drag to pan. **Export GEDCOM** downloads a
 round-tripped `.ged`.
 
+## Deploying (production)
+
+`docker-compose.prod.yml` runs the published images. Set `SECRET_KEY` and
+`POSTGRES_PASSWORD`; `HTTP_PORT` chooses the host port (default 8080).
+
+### ⚠️ Upgrading past 2026-08-03: the web container's port changed
+
+The web image moved to non-root nginx, so it now listens on **8080** inside the
+container instead of 80. A stack whose port mapping still ends in `:80` will
+start "healthy" but reset every connection — the site goes dark with no error
+in the logs.
+
+Update the mapping's **container side** (the number after the colon); the host
+port is unchanged:
+
+```yaml
+ports:
+  - "${HTTP_BIND:-0.0.0.0}:${HTTP_PORT:-8080}:8080"   # was ...:80
+```
+
+Any reverse proxy or tunnel keeps pointing at the same host port. To roll back
+instead, pin `IMAGE_TAG` to a commit before that date.
+
 ## Project layout
 
 ## Rebranding
