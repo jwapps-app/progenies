@@ -38,9 +38,9 @@ round-tripped `.ged`.
 ## Deploying (production)
 
 `docker-compose.prod.yml` runs the images CI publishes to GHCR — nothing is
-built on the host. The reference setup is a Synology NAS running the stack
-from Portainer, with `cloudflared` on the NAS forwarding a Cloudflare Tunnel
-to the web container's published port. The web container serves the SPA and
+built on the host. The reference setup is a small Linux Docker host running
+the stack from Portainer, with `cloudflared` on another LAN machine (a NAS)
+forwarding a Cloudflare Tunnel to the web container's published port. The web container serves the SPA and
 proxies `/api`, `/auth` and `/public` to the backend on the same origin, so
 the tunnel only ever points at one port; the database is never published.
 
@@ -57,7 +57,7 @@ release, so an existing stack keeps working until you opt in.
 | `BOOTSTRAP_TOKEN` | strongly recommended | When set, creating the **first** user account requires this value; without it, whoever reaches the register page first owns the instance. `openssl rand -hex 16`. Only matters until the first account exists — after that it can stay set or be removed. |
 | `DATA_PATH` | strongly recommended | **Absolute** host folder for the database files and backups, e.g. `/volume1/docker/progenies`. See *Data and backups*. |
 | `HTTP_PORT` | no | Host port for the web app (default `8080`; the reference setup uses `8091`). |
-| `HTTP_BIND` | no | Host interface the web port binds to (default `0.0.0.0`). See *Tunnel and client addresses*. |
+| `HTTP_BIND` | no | Host interface the web port binds to (default `0.0.0.0`). Only set it to `127.0.0.1` when `cloudflared` runs on the same machine AND the tunnel already targets `127.0.0.1` — see *Tunnel and client addresses*. |
 | `FORWARDED_ALLOW_IPS` | no | Sources the backend trusts for `X-Forwarded-For` / `X-Forwarded-Proto` (default `172.16.0.0/12,10.0.0.0/8`). See below. |
 | `IMAGE_TAG` | no | Image tag to run (default `latest`). CI also tags every image with its git SHA, so a bad deploy rolls back by pinning `IMAGE_TAG` to the last good SHA. |
 | `APP_NAME` | no | API display name. The web bundle's name is baked in at build time and is not affected. |
@@ -68,33 +68,43 @@ Behind the tunnel every request reaches nginx from `cloudflared`'s address,
 so without help the app would see one client — and per-client limits (login
 throttling, the share-link rate limit) would throttle everyone together.
 nginx therefore recovers the real address from Cloudflare's
-`CF-Connecting-IP` header, but **only when the connection came from a Docker
-private range** (`172.16.0.0/12`, `10.0.0.0/8`, loopback) — the ranges the
-tunnel's traffic arrives from. It then sets `X-Forwarded-For` /
-`X-Forwarded-Proto` for the backend (overwriting anything inbound), and the
-backend honours those headers only from `FORWARDED_ALLOW_IPS`, which
-defaults to the same Docker ranges.
+`CF-Connecting-IP` header, but **only when the connection came from a
+private range** — Docker's (`172.16.0.0/12`, `10.0.0.0/8`), the LAN
+(`192.168.0.0/16`), or loopback — i.e. from a machine you control. It then
+sets `X-Forwarded-For` / `X-Forwarded-Proto` for the backend (overwriting
+anything inbound), and the backend honours those headers only from
+`FORWARDED_ALLOW_IPS`, which defaults to the Docker ranges.
 
-Two things follow from that:
+Check it is working after deploying: `docker logs --tail 3 <web container>`
+should show visitors' public addresses. If every line shows the same LAN
+address, that is `cloudflared`'s host and the header is not being trusted.
 
-- **Bind the port to loopback when `cloudflared` runs on the NAS.** Set
-  `HTTP_BIND=127.0.0.1` and point the tunnel's service at
-  `http://127.0.0.1:8091` (or whatever `HTTP_PORT` is). With the default
-  `0.0.0.0`, anyone on the LAN can reach the port directly, bypassing
-  Cloudflare — and can send their own `CF-Connecting-IP` to be treated as any
-  address they like for the rate limits. Loopback-only closes both. (If
-  `cloudflared` runs somewhere else on the LAN, keep `0.0.0.0` and restrict
-  the port with the NAS firewall to that host instead.)
-- **`FORWARDED_ALLOW_IPS` trusts the whole stack network**, which includes
-  the `db-backup` sidecar as well as nginx. That sidecar has no route to the
-  backend in normal operation, so this is a fine default. The stricter option
-  is to pin the stack's subnet (`networks: default: ipam: config: - subnet:
-  172.30.0.0/24` in the compose file) and set `FORWARDED_ALLOW_IPS` to that
-  one subnet. Either way, confirm the stack's network actually lives in a
-  trusted range — `docker network inspect <stack>_default` — because a host
-  with many stacks can run Docker's default pool past `172.31.x` into
-  `192.168.x`, at which point the header would be (safely) ignored and every
-  user would share one bucket again.
+Where `cloudflared` runs decides one setting:
+
+- **`cloudflared` on a different machine than the app** (for example the
+  tunnel on a NAS, the app on a Docker host). The tunnel's service URL is the
+  app host's LAN address and port. **Leave `HTTP_BIND` unset.** Binding to
+  loopback would make the app unreachable from the tunnel and take the site
+  down. To keep other LAN devices off the port, use the app host's firewall
+  instead, e.g. `ufw allow from <cloudflared host IP> to any port 8091` and
+  `ufw deny 8091`.
+- **`cloudflared` on the same machine as the app.** You may bind the port to
+  loopback so nothing else on the LAN can reach it: FIRST change the tunnel's
+  service URL to `http://127.0.0.1:<HTTP_PORT>`, confirm the site still
+  loads, and only THEN set `HTTP_BIND=127.0.0.1` and update the stack. Doing
+  it in the other order takes the site down until you revert.
+
+With the port open to the LAN (the first case), a LAN device could send its
+own `CF-Connecting-IP` and be treated as that address for the per-IP rate
+limits only — the per-account login throttle still applies. On a home
+network that is an acceptable trade; the firewall rule above removes it.
+
+`FORWARDED_ALLOW_IPS` trusts the whole stack network, which includes the
+`db-backup` sidecar as well as nginx; that sidecar has no route to the
+backend in normal operation, so this is a fine default. The stricter option
+is to pin the stack's subnet (`networks: default: ipam: config: - subnet:
+172.30.0.0/24` in the compose file) and set `FORWARDED_ALLOW_IPS` to that one
+subnet.
 
 nginx also throttles `/auth/login` (10/min per client, burst 5) and `/public/`
 (2/s per client, burst 20), answering `429` beyond that, and writes its
@@ -143,10 +153,10 @@ token from its log for that one request.
 
 ### Upgrading to this version
 
-1. Set the new environment variables in the stack: `BOOTSTRAP_TOKEN`,
-   `DATA_PATH` (absolute), and `HTTP_BIND=127.0.0.1` if `cloudflared` runs on
-   the NAS (retarget the tunnel to `http://127.0.0.1:<HTTP_PORT>` at the same
-   time). `FORWARDED_ALLOW_IPS` can stay at its default.
+1. Set the new environment variables in the stack: `BOOTSTRAP_TOKEN` and
+   `DATA_PATH` (absolute). Do NOT set `HTTP_BIND` unless you have read *Tunnel
+   and client addresses* — in most setups it stays unset.
+   `FORWARDED_ALLOW_IPS` can stay at its default.
 2. If you are moving `DATA_PATH` from Portainer's volume to a real folder,
    copy the existing `pgdata` and `backups` directories there first (stack
    stopped), or restore the latest dump into the new location.
