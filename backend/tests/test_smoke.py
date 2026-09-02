@@ -147,7 +147,7 @@ def test_gedcom_import_export_roundtrip(client, admin):
 
     # Nickname, married name, PEDI relation, shared-note pointer, and the
     # custom _ORDER/_UNMAR tags must all have been parsed.
-    people = client.get(f"/api/trees/{tree}/individuals", headers=admin).json()
+    people = client.get(f"/api/trees/{tree}/individuals?include_details=true", headers=admin).json()
     robert = next(p for p in people if p["given_name"] == "Robert")
     mary = next(p for p in people if p["given_name"] == "Mary")
     assert robert["nickname"] == "Bob"
@@ -209,7 +209,7 @@ def test_list_individuals_omits_photos_by_default(client, admin):
     )
     pid = r.json()["id"]
     listed = client.get(f"/api/trees/{tree}/individuals", headers=admin).json()
-    assert listed[0]["photo_url"] is None
+    assert "photo_url" not in listed[0]  # omitted from the JSON, not nulled
     listed = client.get(f"/api/trees/{tree}/individuals?include_photos=true", headers=admin).json()
     assert listed[0]["photo_url"]
     detail = client.get(f"/api/trees/{tree}/individuals/{pid}", headers=admin).json()
@@ -302,15 +302,16 @@ def test_public_share_link_omits_sensitive_fields(client, admin):
 
     token = client.post(f"/api/trees/{tree}/share-link", headers=admin).json()["share_token"]
     assert token
+    share = {"X-Share-Token": token}
 
-    people = client.get(f"/public/{token}/individuals").json()
+    people = client.get("/public/individuals", headers=share).json()
     assert people, "public individuals should be listed"
     for p in people:
         for leaked in ("notes", "birth_place", "death_place", "gedcom_xref", "photo_url", "tree_id", "created_at"):
             assert leaked not in p, f"public individual leaked {leaked}"
         assert p["given_name"] == "Secret"  # rendered fields still present
 
-    fams = client.get(f"/public/{token}/families").json()
+    fams = client.get("/public/families", headers=share).json()
     assert fams, "public families should be listed"
     for f in fams:
         for leaked in ("notes", "married_place", "divorced_date", "married_date", "gedcom_xref", "tree_id"):
@@ -318,7 +319,7 @@ def test_public_share_link_omits_sensitive_fields(client, admin):
 
     # Revoking the link closes the door.
     client.delete(f"/api/trees/{tree}/share-link", headers=admin)
-    assert client.get(f"/public/{token}/individuals").status_code == 404
+    assert client.get("/public/individuals", headers=share).status_code == 404
 
 
 def test_visualization_two_marriages(client, admin):
@@ -414,7 +415,10 @@ def test_refresh_and_password_reset_revocation(client, admin):
     assert r.status_code == 204, r.text
     assert client.get("/auth/me", headers=headers).status_code == 401
     assert client.get("/auth/me", headers={"Authorization": f"Bearer {fresh}"}).status_code == 401
-    client.cookies.set("refresh_token", old_refresh, domain="testserver", path="/auth")
+    # The jar files server-set cookies for the dotless "testserver" host under
+    # "testserver.local"; a replay must use that domain or it is never sent.
+    client.cookies.delete("refresh_token")
+    client.cookies.set("refresh_token", old_refresh, domain="testserver.local", path="/auth")
     assert client.post("/auth/refresh").status_code == 401
 
 

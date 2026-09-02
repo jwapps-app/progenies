@@ -8,6 +8,7 @@ import AncestorChart from "../components/visualizations/AncestorChart";
 import Modal from "../components/ui/Modal";
 import ThemeToggle from "../components/ui/ThemeToggle";
 import { useTheme } from "../store/theme";
+import { usePhotoCache } from "../hooks/usePhotos";
 import { buildParentMap, describeRelationship, relationshipPath } from "../utils/relationship";
 import { findWarnings } from "../utils/warnings";
 import { exportChartPng } from "../utils/exportImage";
@@ -225,6 +226,11 @@ export default function TreeViewPage() {
   // Guards a slow response from a previous tree landing after a URL switch.
   const treeIdRef = useRef(treeId);
   treeIdRef.current = treeId;
+  // Chart payloads carry no photos (a large chart with thumbnails on every
+  // card was ~20x the size without). They're fetched in one batch per chart
+  // and attached to the nodes; cached per tree, so re-rooting only asks for
+  // ids not seen yet.
+  const loadPhotos = usePhotoCache(treeId, (ids) => api.photos(treeIdRef.current!, ids));
 
   async function loadData(initial = false) {
     if (!treeId) return;
@@ -327,13 +333,22 @@ export default function TreeViewPage() {
     let cancelled = false;
     const onErr = (err: unknown) =>
       !cancelled && setError(err instanceof Error ? err.message : "Failed to load chart");
+    // Cached photos attach before the chart goes into state; any the batch
+    // fetch adds afterwards re-render it via a shallow clone of the same root
+    // object — same root id, so the chart keeps its pan/zoom instead of
+    // refitting, and no second fetch of the tree. The clone only lands while
+    // that exact object is still what's in state.
     if (viewMode === "ancestors") {
       api
         .ancestors(treeId, rootId)
         .then((d) => {
           if (cancelled) return;
           ancestorDataFor.current = want;
+          const pending = loadPhotos(d);
           setAncestorData(d);
+          void pending.then((added) => {
+            if (added) setAncestorData((cur) => (cur === d ? { ...d } : cur));
+          });
         })
         .catch(onErr);
     } else {
@@ -342,14 +357,18 @@ export default function TreeViewPage() {
         .then((d) => {
           if (cancelled) return;
           treeDataFor.current = want;
+          const pending = loadPhotos(d);
           setTreeData(d);
+          void pending.then((added) => {
+            if (added) setTreeData((cur) => (cur === d ? { ...d } : cur));
+          });
         })
         .catch(onErr);
     }
     return () => {
       cancelled = true;
     };
-  }, [treeId, rootId, reloadKey, viewMode]);
+  }, [treeId, rootId, reloadKey, viewMode, loadPhotos]);
 
   async function reload() {
     await loadData();
@@ -363,8 +382,8 @@ export default function TreeViewPage() {
     () => new Map(individuals.map((i) => [i.id, i])),
     [individuals]
   );
-  // The individuals LIST omits photo thumbnails (payload size); fetch the
-  // selected person's detail lazily so the panel and edit form get the photo.
+  // The individuals LIST omits photo thumbnails and notes (payload size); fetch
+  // the selected person's detail lazily so the panel and edit form get both.
   const [selectedDetail, setSelectedDetail] = useState<Individual | null>(null);
   useEffect(() => {
     if (!treeId || !selectedId) {
@@ -388,10 +407,30 @@ export default function TreeViewPage() {
   const selectedBase = selectedId ? personById.get(selectedId) ?? null : null;
   const selected =
     selectedBase && selectedDetail && selectedDetail.id === selectedBase.id
-      ? { ...selectedBase, photo_url: selectedDetail.photo_url }
+      ? { ...selectedBase, photo_url: selectedDetail.photo_url, notes: selectedDetail.notes }
       : selectedBase;
-  // TRUE once the selected person's photo state is actually known.
-  const selectedPhotoLoaded = !!selected && selectedDetail?.id === selected.id;
+  // TRUE once the selected person's photo and notes are actually known (the
+  // list item alone has neither — the keys are absent, not null).
+  const selectedDetailLoaded = !!selected && selectedDetail?.id === selected.id;
+
+  // Open the edit form only once the detail is in hand: a form seeded from the
+  // bare list item would show blank notes/photo and, on save, write those
+  // blanks over the values it never received.
+  async function openEdit() {
+    if (!treeId || !selectedId) return;
+    if (!selectedDetailLoaded) {
+      setBusy(true);
+      try {
+        setSelectedDetail(await api.getIndividual(treeId, selectedId));
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to load person details");
+        return;
+      } finally {
+        setBusy(false);
+      }
+    }
+    setModal("edit");
+  }
 
   // Families in which a given person is a spouse, with the co-parent resolved.
   function spouseFamiliesOf(personId: string) {
@@ -465,12 +504,16 @@ export default function TreeViewPage() {
 
   async function handleEditPerson(fields: PersonFields) {
     if (!treeId || !selectedId) return;
-    const before = selected; // includes the photo when the detail has loaded
+    const before = selected; // includes photo + notes when the detail has loaded
     const payload = fieldsToPayload(fields);
-    // The list omits photos — if the form was seeded before the detail fetch
-    // finished and the user didn't set one, sending photo_url:null would WIPE
-    // the stored photo. Omit the field instead (the PUT is exclude_unset).
-    if (!fields.photo_url && !selectedPhotoLoaded) delete payload.photo_url;
+    // The list omits photos and notes — openEdit waits for the detail, but as a
+    // backstop: if the form was somehow seeded without it and the user left the
+    // field blank, sending null would WIPE the stored value. Omit the field
+    // instead (the PUT is exclude_unset).
+    if (!selectedDetailLoaded) {
+      if (!fields.photo_url) delete payload.photo_url;
+      if (!fields.notes) delete payload.notes;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -479,7 +522,10 @@ export default function TreeViewPage() {
       setModal(null);
       if (before) {
         const undoPayload = individualPayload(before);
-        if (!selectedPhotoLoaded) delete undoPayload.photo_url;
+        if (!selectedDetailLoaded) {
+          delete undoPayload.photo_url;
+          delete undoPayload.notes;
+        }
         pushUndo(`Edit ${displayName(before)}`, () =>
           api.updateIndividual(treeId, before.id, undoPayload)
         );
@@ -494,9 +540,19 @@ export default function TreeViewPage() {
   async function handleDeletePerson() {
     if (!treeId || !selected) return;
     if (!confirm(`Delete ${displayName(selected)}? This also removes their family links.`)) return;
-    const person = selected;
     // Capture everything needed to put the person back: their full record, the
-    // families they are a parent in, and the families they are a child in.
+    // families they are a parent in, and the families they are a child in. The
+    // list item lacks notes and photo, so fetch the detail if it isn't in yet —
+    // an undo must restore the person whole.
+    let person: Individual = selected;
+    if (!selectedDetailLoaded) {
+      try {
+        person = await api.getIndividual(treeId, selected.id);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to load person details");
+        return;
+      }
+    }
     const asParent = families.filter(
       (f) => f.husband_id === person.id || f.wife_id === person.id
     );
@@ -1050,6 +1106,8 @@ export default function TreeViewPage() {
       const tree = await api.descendants(tid, path[path.length - 1]);
       if (treeIdRef.current !== tid) return; // stale response for another tree
       prune(tree);
+      await loadPhotos(tree); // grafts are small — wait so they render complete
+      if (treeIdRef.current !== tid) return;
       setExpandedFamily((m) => ({ ...m, [spouseId]: tree }));
     } catch (err) {
       if (treeIdRef.current === tid)
@@ -1606,7 +1664,7 @@ export default function TreeViewPage() {
               <Detail label="Born" value={joinDatePlace(selected.birth_date, selected.birth_place)} />
               <Detail label="Died" value={joinDatePlace(selected.death_date, selected.death_place)} />
               <Detail label="Age" value={selected.age} />
-              <Detail label="Notes" value={selected.notes} wrap />
+              <Detail label="Notes" value={selected.notes ?? null} wrap />
               {selected.is_unknown && (
                 <p className="italic text-gray-400 dark:text-slate-500">Placeholder (unknown) individual</p>
               )}
@@ -1814,7 +1872,7 @@ export default function TreeViewPage() {
                   >
                     Add descendant
                   </PanelButton>
-                  <PanelButton onClick={() => setModal("edit")}>Edit</PanelButton>
+                  <PanelButton onClick={openEdit}>Edit</PanelButton>
                 </>
               )}
               <PanelButton onClick={openRelate}>Relationship…</PanelButton>

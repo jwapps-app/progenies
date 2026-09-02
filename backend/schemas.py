@@ -1,8 +1,28 @@
 """Pydantic request/response schemas for the API."""
+import re
 import uuid
 from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+# Every free-text input carries a max_length. Nothing here is a functional
+# limit for real genealogy data — they exist so an authenticated client can't
+# park megabytes in a name field (each row is loaded whole by list/export/chart
+# queries, and the GEDCOM archive copies it all again).
+_NAME_MAX = 200
+_DATE_MAX = 64
+_PLACE_MAX = 512
+_AGE_MAX = 32
+_NOTES_MAX = 65_536
+_SOURCE_FIELD_MAX = 512
+# A ~450 KB image as base64 (the client resizes thumbnails well below this).
+_PHOTO_MAX = 600_000
+
+# A GEDCOM cross-reference id: "@" + up to 20 alphanumerics/underscores + "@".
+# Stored xrefs are written VERBATIM into `0 @xref@ INDI` record headers on
+# export, so anything looser (spaces, newlines, a second "@") would let a
+# client inject record structure into the exported file.
+_GEDCOM_XREF = re.compile(r"^@[A-Za-z0-9_]{1,20}@$")
 
 
 def _validate_password_bytes(value: str) -> str:
@@ -14,12 +34,24 @@ def _validate_password_bytes(value: str) -> str:
     return value
 
 
+def _validate_gedcom_xref(value: str | None) -> str | None:
+    """Empty → None; otherwise must be a well-formed xref (see _GEDCOM_XREF)."""
+    if value is None or value == "":
+        return None
+    if not _GEDCOM_XREF.match(value):
+        raise ValueError("gedcom_xref must look like @I123@ (letters, digits, underscore)")
+    return value
+
+
 # ---------------------------------------------------------------------------
 # Auth
 # ---------------------------------------------------------------------------
 class UserCreate(BaseModel):
     username: str = Field(min_length=3, max_length=64)
     password: str = Field(min_length=8, max_length=72)
+    # Only consulted by /auth/register, and only when BOOTSTRAP_TOKEN is set on
+    # the server; the admin's /api/users create ignores it.
+    bootstrap_token: str | None = Field(default=None, max_length=256)
 
     _check_password = field_validator("password")(_validate_password_bytes)
 
@@ -45,9 +77,20 @@ class PasswordReset(BaseModel):
     _check_password = field_validator("password")(_validate_password_bytes)
 
 
+class PasswordChange(BaseModel):
+    """Self-service change: the caller proves they hold the current password."""
+
+    current_password: str = Field(min_length=1, max_length=72)
+    new_password: str = Field(min_length=8, max_length=72)
+
+    _check_password = field_validator("new_password")(_validate_password_bytes)
+
+
 class LoginRequest(BaseModel):
-    username: str
-    password: str
+    # Bounded so a login attempt can't carry a 100 KB "username" through the
+    # throttle hash and the database lookup; real values are far shorter.
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=72)
 
 
 class TokenResponse(BaseModel):
@@ -63,12 +106,12 @@ class TokenResponse(BaseModel):
 # ---------------------------------------------------------------------------
 class TreeCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
-    description: str | None = None
+    description: str | None = Field(default=None, max_length=4_096)
 
 
 class TreeUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
-    description: str | None = None
+    description: str | None = Field(default=None, max_length=4_096)
 
 
 class TreeOut(BaseModel):
@@ -112,19 +155,19 @@ class UserDirectoryOut(BaseModel):
 # Individuals
 # ---------------------------------------------------------------------------
 class IndividualBase(BaseModel):
-    given_name: str | None = None
-    middle_name: str | None = None
-    surname: str | None = None
-    married_name: str | None = None
-    nickname: str | None = None
+    given_name: str | None = Field(default=None, max_length=_NAME_MAX)
+    middle_name: str | None = Field(default=None, max_length=_NAME_MAX)
+    surname: str | None = Field(default=None, max_length=_NAME_MAX)
+    married_name: str | None = Field(default=None, max_length=_NAME_MAX)
+    nickname: str | None = Field(default=None, max_length=_NAME_MAX)
     sex: str | None = Field(default=None, pattern="^[MFU]$")
-    birth_date: str | None = None
-    birth_place: str | None = None
-    death_date: str | None = None
-    death_place: str | None = None
-    age: str | None = None
-    notes: str | None = None
-    photo_url: str | None = None
+    birth_date: str | None = Field(default=None, max_length=_DATE_MAX)
+    birth_place: str | None = Field(default=None, max_length=_PLACE_MAX)
+    death_date: str | None = Field(default=None, max_length=_DATE_MAX)
+    death_place: str | None = Field(default=None, max_length=_PLACE_MAX)
+    age: str | None = Field(default=None, max_length=_AGE_MAX)
+    notes: str | None = Field(default=None, max_length=_NOTES_MAX)
+    photo_url: str | None = Field(default=None, max_length=_PHOTO_MAX)
     # Writable so client-side restore (undo of a delete) can preserve the
     # original GEDCOM id — round-trip fidelity survives a delete+undo.
     gedcom_xref: str | None = None
@@ -146,10 +189,12 @@ class IndividualCreate(IndividualBase):
     is_unknown: bool = False
 
     _check_photo = field_validator("photo_url")(_validate_photo_url)
+    _check_xref = field_validator("gedcom_xref")(_validate_gedcom_xref)
 
 
 class IndividualUpdate(IndividualBase):
     _check_photo = field_validator("photo_url")(_validate_photo_url)
+    _check_xref = field_validator("gedcom_xref")(_validate_gedcom_xref)
 
 
 class IndividualOut(IndividualBase):
@@ -187,18 +232,20 @@ class DismissedPairOut(BaseModel):
 
 class ChildRef(BaseModel):
     individual_id: uuid.UUID
-    birth_order: int | None = None
+    # Bounded to the INTEGER column — an out-of-range value was a 500 from the
+    # database driver instead of a 422.
+    birth_order: int | None = Field(default=None, ge=0, le=2_147_483_647)
     relation: str = Field(default="biological", pattern="^(biological|adopted|step|foster)$")
 
 
 class FamilyBase(BaseModel):
     husband_id: uuid.UUID | None = None
     wife_id: uuid.UUID | None = None
-    married_date: str | None = None
-    married_place: str | None = None
-    divorced_date: str | None = None
-    notes: str | None = None
-    marriage_order: int | None = None
+    married_date: str | None = Field(default=None, max_length=_DATE_MAX)
+    married_place: str | None = Field(default=None, max_length=_PLACE_MAX)
+    divorced_date: str | None = Field(default=None, max_length=_DATE_MAX)
+    notes: str | None = Field(default=None, max_length=_NOTES_MAX)
+    marriage_order: int | None = Field(default=None, ge=0, le=2_147_483_647)
     # "Unknown-depth descendant" link (rendered dotted).
     gap: bool = False
     # Known co-parents who are not married (dotted, no marriage symbol).
@@ -207,10 +254,18 @@ class FamilyBase(BaseModel):
 
 class FamilyCreate(FamilyBase):
     children: list[ChildRef] = Field(default_factory=list)
+    # Writable for the same reason as on individuals: restore-after-delete
+    # keeps the original GEDCOM id.
+    gedcom_xref: str | None = None
+
+    _check_xref = field_validator("gedcom_xref")(_validate_gedcom_xref)
 
 
 class FamilyUpdate(FamilyBase):
     children: list[ChildRef] | None = None
+    gedcom_xref: str | None = None
+
+    _check_xref = field_validator("gedcom_xref")(_validate_gedcom_xref)
 
 
 class ChildOut(BaseModel):
@@ -270,19 +325,23 @@ class PublicFamilyOut(BaseModel):
 # Sources & citations
 # ---------------------------------------------------------------------------
 class SourceBase(BaseModel):
-    title: str | None = None
-    author: str | None = None
-    publisher: str | None = None
-    date: str | None = None
-    notes: str | None = None
+    title: str | None = Field(default=None, max_length=_SOURCE_FIELD_MAX)
+    author: str | None = Field(default=None, max_length=_SOURCE_FIELD_MAX)
+    publisher: str | None = Field(default=None, max_length=_SOURCE_FIELD_MAX)
+    date: str | None = Field(default=None, max_length=_SOURCE_FIELD_MAX)
+    notes: str | None = Field(default=None, max_length=_NOTES_MAX)
 
 
 class SourceCreate(SourceBase):
-    pass
+    gedcom_xref: str | None = None
+
+    _check_xref = field_validator("gedcom_xref")(_validate_gedcom_xref)
 
 
 class SourceUpdate(SourceBase):
-    pass
+    gedcom_xref: str | None = None
+
+    _check_xref = field_validator("gedcom_xref")(_validate_gedcom_xref)
 
 
 class SourceOut(SourceBase):
@@ -295,8 +354,8 @@ class SourceOut(SourceBase):
 
 class CitationCreate(BaseModel):
     source_id: uuid.UUID
-    page: str | None = None
-    notes: str | None = None
+    page: str | None = Field(default=None, max_length=_SOURCE_FIELD_MAX)
+    notes: str | None = Field(default=None, max_length=_NOTES_MAX)
 
 
 class CitationOut(BaseModel):
@@ -323,6 +382,11 @@ class ImportSummary(BaseModel):
 
 # ---------------------------------------------------------------------------
 # Visualization (recursive descendant / ancestor trees)
+#
+# Chart nodes carry no photo_url: a base64 thumbnail per node multiplied the
+# payload of every chart fetch, and the public share surface must not ship
+# photos at all. The chart fetches a photo through the individual detail
+# endpoint when it needs one.
 # ---------------------------------------------------------------------------
 class TreeNode(BaseModel):
     """Ancestor-chart node. `children` holds the next generation outward (parents)."""
@@ -339,7 +403,6 @@ class TreeNode(BaseModel):
     age: str | None
     is_unknown: bool
     generation: int
-    photo_url: str | None = None
     children: list["TreeNode"] = Field(default_factory=list)
 
 
@@ -364,7 +427,6 @@ class DescendantNode(BaseModel):
     age: str | None
     is_unknown: bool
     generation: int
-    photo_url: str | None = None
     # How this person relates to their parents in this chart (biological by
     # default; adopted/step/foster for non-biological child links).
     relation: str = "biological"

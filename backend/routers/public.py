@@ -5,17 +5,26 @@ read-only access to that ONE tree — the "send the family tree to a relative"
 path, without the admin having to create them an account. Strictly read-only:
 only the data the chart and panel need, no mutation routes, no photos beyond
 what the chart shows, no export.
+
+The token travels in the X-Share-Token request header, never in the URL. A
+path token (/public/{token}/...) was written into every access log between
+the browser and the app — nginx, uvicorn, the Cloudflare tunnel — which is
+exactly the kind of place a credential must not accumulate. The share URL the
+owner hands out carries the token in the fragment (/share#token), which the
+browser never sends to any server; the SPA lifts it out and sends it here as
+a header.
 """
 import time
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session, selectinload
 
 from database import get_db
 from models import Family, FamilyTree, Individual
+from routers.individuals import PhotoBatchRequest, photos_for
 from routers.visualization import build_ancestors, build_descendants
 from schemas import (
     DescendantNode,
@@ -24,7 +33,9 @@ from schemas import (
     TreeNode,
 )
 
-router = APIRouter(prefix="/public/{token}", tags=["public"])
+router = APIRouter(prefix="/public", tags=["public"])
+
+SHARE_TOKEN_HEADER = "X-Share-Token"
 
 # Per-IP rate limit for the unauthenticated share surface. These routes run
 # recursive tree traversals, so an open loop against them is the cheapest DoS.
@@ -37,6 +48,12 @@ _RATE_MAX = 120  # requests per IP per window
 # Without it, every IP ever seen keeps an entry forever — attacker-growable
 # memory on an unauthenticated surface (rotate source IPs).
 _RATE_SWEEP_AT = 1024
+
+# The chart routes are the expensive ones on this unauthenticated surface, so
+# they run under a tighter per-statement cap than the engine-wide default
+# (30s, see database.py). SET LOCAL scopes it to the current transaction; the
+# session's rollback-on-close discards it.
+_PUBLIC_CHART_STATEMENT_TIMEOUT_MS = 10000
 
 
 def _sweep_public_hits(now: float) -> None:
@@ -70,13 +87,29 @@ class PublicTreeOut(BaseModel):
 
 
 def get_shared_tree(
-    token: str, request: Request, db: Session = Depends(get_db)
+    request: Request,
+    token: str | None = Header(default=None, alias=SHARE_TOKEN_HEADER),
+    db: Session = Depends(get_db),
 ) -> FamilyTree:
     _rate_limit(request)
+    if not token:
+        # Distinct from the 404 below: the caller sent no credential at all
+        # (an old path-style client, or a hand-typed URL), not a wrong one.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Share token required in the {SHARE_TOKEN_HEADER} header",
+        )
     tree = db.scalar(select(FamilyTree).where(FamilyTree.share_token == token))
     if tree is None or tree.is_deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Link not found or revoked")
     return tree
+
+
+def _tighten_statement_timeout(db: Session) -> None:
+    """Cap each statement of the current transaction (the chart CTEs) below
+    the engine-wide default. get_shared_tree already opened the transaction
+    with its token lookup, so SET LOCAL lands inside it."""
+    db.execute(text(f"SET LOCAL statement_timeout = {_PUBLIC_CHART_STATEMENT_TIMEOUT_MS}"))
 
 
 @router.get("/tree", response_model=PublicTreeOut)
@@ -121,6 +154,7 @@ def public_descendants(
     tree: FamilyTree = Depends(get_shared_tree),
     db: Session = Depends(get_db),
 ) -> DescendantNode:
+    _tighten_statement_timeout(db)
     return build_descendants(db, tree, individual_id)
 
 
@@ -130,4 +164,21 @@ def public_ancestors(
     tree: FamilyTree = Depends(get_shared_tree),
     db: Session = Depends(get_db),
 ) -> TreeNode:
+    _tighten_statement_timeout(db)
     return build_ancestors(db, tree, individual_id)
+
+
+@router.post("/photos", response_model=dict[str, str])
+def public_photos(
+    payload: PhotoBatchRequest,
+    response: Response,
+    tree: FamilyTree = Depends(get_shared_tree),
+    db: Session = Depends(get_db),
+) -> dict[str, str]:
+    """Photo thumbnails for the people on the shared chart, keyed by id. The
+    chart payload no longer carries photos (see routers/visualization.py); the
+    viewer fetches them here in one batch for just the ids it renders. Scoped
+    to the shared tree — ids from any other tree are silently absent. The
+    individuals list above stays photo-free."""
+    response.headers["Cache-Control"] = "private, max-age=300"
+    return photos_for(db, tree, payload.ids)

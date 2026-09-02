@@ -8,13 +8,13 @@ import secrets
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from auth.deps import get_accessible_tree, get_current_user, get_owned_tree, tree_role
 from database import get_db
-from models import FamilyTree, TreeShare, User
+from models import FamilyTree, GedcomFile, TreeShare, User
 from schemas import ShareCreate, ShareOut, TreeCreate, TreeOut, TreeUpdate
 
 router = APIRouter(prefix="/api/trees", tags=["trees"])
@@ -100,6 +100,10 @@ def update_tree(
 def delete_tree(tree: FamilyTree = Depends(get_owned_tree), db: Session = Depends(get_db)) -> None:
     # Soft-delete per the API contract.
     tree.is_deleted = True
+    # The archived GEDCOM copies are recovery artifacts for a LIVE tree — for a
+    # deleted one they are just full duplicates of its data sitting in the
+    # database indefinitely. Drop them now; the tree's own rows stay.
+    db.execute(delete(GedcomFile).where(GedcomFile.tree_id == tree.id))
     db.commit()
 
 

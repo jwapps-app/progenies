@@ -2,7 +2,8 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from pydantic import BaseModel, Field
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from auth.deps import get_accessible_tree, get_editable_tree, require_in_tree
@@ -12,31 +13,73 @@ from schemas import IndividualCreate, IndividualOut, IndividualUpdate, MergeRequ
 
 router = APIRouter(prefix="/api/trees/{tree_id}/individuals", tags=["individuals"])
 
+# Upper bound on one photo batch. Generous enough that a whole large chart is
+# one or two requests, small enough that a single call can't be made to pull
+# every thumbnail in the database.
+PHOTO_BATCH_MAX = 2000
 
-@router.get("", response_model=list[IndividualOut])
+
+class PhotoBatchRequest(BaseModel):
+    ids: list[uuid.UUID] = Field(max_length=PHOTO_BATCH_MAX)
+
+
+def photos_for(db: Session, tree: FamilyTree, ids: list[uuid.UUID]) -> dict[str, str]:
+    """The photo thumbnails for the given ids, keyed by id — only ids that
+    belong to this tree AND have a photo appear. Shared by the authenticated
+    batch route (POST /api/trees/{tree_id}/photos, registered alongside the
+    chart routes in routers/visualization.py since it serves the chart) and
+    the public share-link route. SELECTs just id + photo so no other column
+    rides along."""
+    if not ids:
+        return {}
+    stmt = select(Individual.id, Individual.photo_url).where(
+        Individual.tree_id == tree.id,
+        Individual.id.in_(set(ids)),
+        Individual.photo_url.is_not(None),
+    )
+    return {str(pid): photo for pid, photo in db.execute(stmt) if photo}
+
+
+@router.get("", response_model=list[IndividualOut], response_model_exclude_unset=True)
 def list_individuals(
     include_photos: bool = False,
+    include_details: bool = False,
     tree: FamilyTree = Depends(get_accessible_tree),
     db: Session = Depends(get_db),
 ) -> list[IndividualOut]:
-    """List individuals. Photo thumbnails (base64 data URLs) are OMITTED by
-    default — they multiply the payload of every list fetch; the detail
-    endpoint (and the visualization endpoints, which render them) still
-    include them. Pass include_photos=true to embed them here too."""
-    if include_photos:
+    """List individuals. Two blobs are OMITTED from the wire by default:
+
+    * photo thumbnails (base64 data URLs) — they multiply the payload of every
+      list fetch; the detail endpoint and the batched photos endpoint serve
+      them. Pass include_photos=true to embed them here.
+    * free-text notes — measured at roughly a third of a large tree's list
+      payload, and only the detail panel and edit form ever show them (both
+      fetch the person's detail). Pass include_details=true to embed them.
+
+    Birth/death places stay: the search box, the duplicate finder's summaries
+    and the detail panel all read them straight off the list. Omitted fields
+    are absent from the JSON (not null), so a client can tell "no notes" from
+    "not loaded" — the edit form relies on that to never save a blank over
+    notes it never received."""
+    omitted: set[str] = set()
+    if not include_photos:
+        omitted.add("photo_url")
+    if not include_details:
+        omitted.add("notes")
+    if not omitted:
         people = db.scalars(
             select(Individual)
             .where(Individual.tree_id == tree.id)
             .order_by(Individual.surname, Individual.given_name)
         )
         return [IndividualOut.model_validate(p) for p in people]
-    # Omit the photo column from the SELECT itself, so the base64 blobs never
-    # cross the database wire. (Loading full rows and nulling the DTO field
-    # still fetched every photo; deferring the column would lazy-load it
-    # per row the moment serialization touched it.) The DTO's photo_url
-    # defaults to None.
+    # Omit the columns from the SELECT itself, so the blobs never cross the
+    # database wire. (Loading full rows and nulling the DTO fields still fetched
+    # every one; deferring a column would lazy-load it per row the moment
+    # serialization touched it.) The omitted DTO fields stay unset, which
+    # response_model_exclude_unset drops from the JSON.
     stmt = (
-        select(*(c for c in Individual.__table__.c if c.key != "photo_url"))
+        select(*(c for c in Individual.__table__.c if c.key not in omitted))
         .where(Individual.tree_id == tree.id)
         .order_by(Individual.surname, Individual.given_name)
     )
@@ -161,42 +204,38 @@ def merge_individual(
         survivor.sex = dup.sex
     if not dup.is_unknown:
         survivor.is_unknown = False
-
-    # Re-point family partner slots from the duplicate to the survivor.
-    for fam in db.scalars(
-        select(Family).where(
-            Family.tree_id == tree.id,
-            (Family.husband_id == dup.id) | (Family.wife_id == dup.id),
-        )
-    ):
-        if fam.husband_id == dup.id:
-            fam.husband_id = survivor.id
-        if fam.wife_id == dup.id:
-            fam.wife_id = survivor.id
     db.flush()
 
-    # Re-point child links (avoiding a duplicate link in the same family).
-    # The survivor's existing memberships come from ONE query up front — a
-    # per-link db.get probe was an N+1.
+    # Re-point family partner slots from the duplicate to the survivor — one
+    # UPDATE per slot rather than loading every family and saving them back
+    # one row at a time.
+    for slot in (Family.husband_id, Family.wife_id):
+        db.execute(
+            update(Family)
+            .where(Family.tree_id == tree.id, slot == dup.id)
+            .values({slot.key: survivor.id})
+        )
+
+    # Re-point child links. A link in a family the survivor is ALREADY a child
+    # of would collide on the (family, individual) primary key, so those are
+    # dropped instead of moved: one UPDATE for the movable links, one DELETE
+    # for whatever remains (the collisions). The survivor's existing
+    # memberships come from ONE query up front.
     survivor_child_fams = set(
         db.scalars(select(Child.family_id).where(Child.individual_id == survivor.id))
     )
-    for ch in list(db.scalars(select(Child).where(Child.individual_id == dup.id))):
-        if ch.family_id not in survivor_child_fams:
-            db.add(
-                Child(
-                    family_id=ch.family_id,
-                    individual_id=survivor.id,
-                    birth_order=ch.birth_order,
-                    relation=ch.relation,
-                )
-            )
-            survivor_child_fams.add(ch.family_id)
-        db.delete(ch)
+    db.execute(
+        update(Child)
+        .where(Child.individual_id == dup.id, Child.family_id.not_in(survivor_child_fams))
+        .values(individual_id=survivor.id)
+    )
+    db.execute(delete(Child).where(Child.individual_id == dup.id))
 
-    # Re-point citations.
-    for cit in db.scalars(select(Citation).where(Citation.individual_id == dup.id)):
-        cit.individual_id = survivor.id
+    # Re-point citations in ONE statement (the per-row loop was an N+1 on a
+    # well-sourced person).
+    db.execute(
+        update(Citation).where(Citation.individual_id == dup.id).values(individual_id=survivor.id)
+    )
     db.flush()
 
     # Re-pointing can leave TWO family rows for the same couple (survivor and

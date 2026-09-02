@@ -18,8 +18,10 @@ source citations are emitted as SOUR links under each INDI.
 from __future__ import annotations
 
 import hashlib
+import re
+import uuid
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from config import settings
@@ -28,12 +30,37 @@ from models import Child, Citation, Family, FamilyTree, GedcomFile, Individual, 
 # GEDCOM 5.5 caps physical lines at 255 chars; chunk conservatively below that.
 _MAX_SEGMENT = 232
 
+# Every line break the parser (str.splitlines) recognises, normalised to "\n"
+# BEFORE a value is split into CONT lines. `_line` used to split on "\n" only,
+# so a value holding "\r0 @I999@ INDI" was written as ONE physical line that
+# the reader then split at the "\r" — a note could inject whole records into
+# the exported file. Ordered so the two-char "\r\n" wins over a lone "\r".
+_LINE_BREAKS = re.compile("\r\n|[\r\x0b\x0c\x1c\x1d\x1e\x85  ]")
+# Remaining C0 controls (plus DEL) have no place in a GEDCOM value; tab is
+# kept, since it is ordinary whitespace inside free text.
+_CONTROL_CHARS = re.compile("[\x00-\x08\x0e-\x1f\x7f]")
+
+# A stored xref is written verbatim into a `0 @xref@ TAG` record header, so it
+# is only honoured when it is unambiguously a plain id. Anything else (an
+# imported oddity, or a value that slipped in before the API validated it)
+# gets a generated id instead — same as a record with no xref at all.
+_SAFE_XREF = re.compile(r"^@[A-Za-z0-9_]{1,20}@$")
+
+# Archived copies kept per (tree, direction). They exist for recovery, and
+# the newest few are what recovery needs — without a cap every import and
+# every changed export appended another full copy of the tree forever.
+ARCHIVE_KEEP = 5
+
+
+def _clean(value: str) -> str:
+    return _CONTROL_CHARS.sub("", _LINE_BREAKS.sub("\n", value))
+
 
 def _line(level: int, tag: str, value: str | None = None, escape: bool = False) -> str:
     if value is None or value == "":
         return f"{level} {tag}"
     out_lines: list[str] = []
-    for i, seg in enumerate(str(value).split("\n")):
+    for i, seg in enumerate(_clean(str(value)).split("\n")):
         if escape and seg.startswith("@"):
             # Spec: a literal @ at the start of a value is doubled so readers
             # don't mistake it for a pointer. The parser folds @@ back to @.
@@ -53,16 +80,18 @@ def _line(level: int, tag: str, value: str | None = None, escape: bool = False) 
 def _assign_xrefs(items: list, prefix: str) -> dict:
     """Map each record id -> an xref, reusing stored ones, generating the rest.
 
-    A stored xref is honoured only for its FIRST holder — duplicates (from
-    legacy double imports) get generated ids, keeping the output unambiguous.
+    A stored xref is honoured only when well-formed (see _SAFE_XREF) and only
+    for its FIRST holder — duplicates (from legacy double imports) get
+    generated ids, keeping the output unambiguous.
     """
     mapping: dict = {}
     used: set[str] = set()
     pending = []
     for item in items:
-        if item.gedcom_xref and item.gedcom_xref not in used:
-            mapping[item.id] = item.gedcom_xref
-            used.add(item.gedcom_xref)
+        xref = item.gedcom_xref
+        if xref and _SAFE_XREF.match(xref) and xref not in used:
+            mapping[item.id] = xref
+            used.add(xref)
         else:
             pending.append(item)
     counter = 1
@@ -74,6 +103,20 @@ def _assign_xrefs(items: list, prefix: str) -> dict:
         mapping[item.id] = xref
         counter += 1
     return mapping
+
+
+def prune_gedcom_archive(db: Session, tree_id: uuid.UUID, direction: str, keep: int = ARCHIVE_KEEP) -> None:
+    """Delete all but the newest `keep` archive rows for one (tree, direction).
+    Flushes first so a row added in the current transaction counts as newest.
+    Shared by import and export; does not commit."""
+    db.flush()
+    stale = (
+        select(GedcomFile.id)
+        .where(GedcomFile.tree_id == tree_id, GedcomFile.direction == direction)
+        .order_by(GedcomFile.created_at.desc(), GedcomFile.id.desc())
+        .offset(keep)
+    )
+    db.execute(delete(GedcomFile).where(GedcomFile.id.in_(stale)))
 
 
 def export_gedcom(db: Session, tree: FamilyTree, archive: bool = True) -> str:
@@ -257,6 +300,7 @@ def export_gedcom(db: Session, tree: FamilyTree, archive: bool = True) -> str:
                     file_hash=file_hash,
                 )
             )
+            prune_gedcom_archive(db, tree.id, "export")
             db.commit()
 
     return text

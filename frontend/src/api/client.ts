@@ -132,6 +132,15 @@ function jsonBody(body: unknown): RequestInit {
   return { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
 }
 
+/** Options for a share-link read. The token travels in a request header, never
+ * in the URL — a path token was written into every access log between the
+ * browser and the app (nginx, uvicorn, the tunnel). */
+function shareOpts(token: string, init: RequestInit = {}): RequestInit {
+  const headers = new Headers(init.headers);
+  headers.set("X-Share-Token", token);
+  return { ...init, headers };
+}
+
 export const api = {
   // Auth
   registrationOpen: () =>
@@ -185,22 +194,36 @@ export const api = {
   revokeShareLink: (treeId: string) =>
     request<import("../types").Tree>(`/api/trees/${treeId}/share-link`, { method: "DELETE" }),
 
-  // Public (unauthenticated) share-link reads
+  // Public (unauthenticated) share-link reads — the token goes in a header.
   publicTree: (token: string) =>
-    request<{ name: string; description: string | null }>(`/public/${token}/tree`),
+    request<{ name: string; description: string | null }>("/public/tree", shareOpts(token)),
   publicIndividuals: (token: string) =>
-    request<import("../types").PublicIndividual[]>(`/public/${token}/individuals`),
+    request<import("../types").PublicIndividual[]>("/public/individuals", shareOpts(token)),
   publicFamilies: (token: string) =>
-    request<import("../types").PublicFamily[]>(`/public/${token}/families`),
+    request<import("../types").PublicFamily[]>("/public/families", shareOpts(token)),
   publicDescendants: (token: string, individualId: string) =>
-    request<import("../types").TreeNode>(`/public/${token}/descendants/${individualId}`),
+    request<import("../types").TreeNode>(`/public/descendants/${individualId}`, shareOpts(token)),
   publicAncestors: (token: string, individualId: string) =>
-    request<import("../types").AncestorNode>(`/public/${token}/ancestors/${individualId}`),
+    request<import("../types").AncestorNode>(`/public/ancestors/${individualId}`, shareOpts(token)),
+  publicPhotos: (token: string, ids: string[]) =>
+    request<Record<string, string>>(
+      "/public/photos",
+      shareOpts(token, { method: "POST", ...jsonBody({ ids }) })
+    ),
 
-  // Individuals. The list omits photo thumbnails (they multiply the payload);
-  // fetch a person's detail for their photo.
+  // Individuals. The list omits photo thumbnails and notes (they multiply the
+  // payload); a person's detail carries both, and `photos` serves thumbnails
+  // for a whole chart in one batch.
   listIndividuals: (treeId: string) =>
     request<import("../types").Individual[]>(`/api/trees/${treeId}/individuals`),
+  // Photo thumbnails keyed by id, for just the ids given (max 2,000 per call;
+  // ids without a photo are absent). A POST because a chart's worth of ids
+  // does not fit in a URL — it is a read.
+  photos: (treeId: string, ids: string[]) =>
+    request<Record<string, string>>(`/api/trees/${treeId}/photos`, {
+      method: "POST",
+      ...jsonBody({ ids }),
+    }),
   getIndividual: (treeId: string, id: string) =>
     request<import("../types").Individual>(`/api/trees/${treeId}/individuals/${id}`),
   createIndividual: (treeId: string, body: Partial<import("../types").Individual>) =>

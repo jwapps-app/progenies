@@ -9,7 +9,10 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      # Loopback only: the dev database has a well-known default password, so
+      # it must not be reachable from the LAN (the backend reaches it over the
+      # compose network, not this mapping — it exists for local psql/GUI use).
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-kindred} -d ${POSTGRES_DB:-genealogy}"]
       interval: 5s
@@ -29,6 +32,9 @@ services:
       APP_NAME: ${APP_NAME:-Progenies}
       DATABASE_URL: ${DATABASE_URL:-postgresql://kindred:kindred@db:5432/genealogy}
       SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
+      # Empty in dev: first registration needs no token. Set on any
+      # internet-facing deploy (see docker-compose.prod.yml).
+      BOOTSTRAP_TOKEN: ${BOOTSTRAP_TOKEN:-}
       ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-60}
       REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS:-30}
       BCRYPT_ROUNDS: ${BCRYPT_ROUNDS:-12}

@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useLocation } from "react-router-dom";
 import { api } from "../api/client";
 import DescendantPyramid from "../components/visualizations/DescendantPyramid";
 import AncestorChart from "../components/visualizations/AncestorChart";
 import ThemeToggle from "../components/ui/ThemeToggle";
 import { useTheme } from "../store/theme";
+import { usePhotoCache } from "../hooks/usePhotos";
 import type { AncestorNode, PublicFamily, PublicIndividual, TreeNode } from "../types";
 import { displayName } from "../types";
 import { APP_NAME } from "../branding";
@@ -23,12 +24,17 @@ function defaultRoot(individuals: PublicIndividual[], families: PublicFamily[]):
 }
 
 /**
- * Read-only tree view behind a public share link (/share/:token). No account
- * required — the token itself is the credential. Chart + root picker only;
- * every editing affordance is absent by construction.
+ * Read-only tree view behind a public share link (/share#token). No account
+ * required — the token itself is the credential. It lives in the URL FRAGMENT,
+ * which the browser never sends to any server (so it stays out of every access
+ * log); this page lifts it out and the API client sends it as a request header.
+ * Chart + root picker only; every editing affordance is absent by construction.
  */
 export default function PublicTreePage() {
-  const { token } = useParams<{ token: string }>();
+  const location = useLocation();
+  // Changing the fragment (e.g. pasting a different link over this one) is a
+  // navigation like any other: everything below keys off `token`.
+  const token = location.hash.startsWith("#") ? location.hash.slice(1) : "";
   const theme = useTheme((s) => s.theme);
   const [treeName, setTreeName] = useState<string>("");
   const [individuals, setIndividuals] = useState<PublicIndividual[]>([]);
@@ -38,9 +44,24 @@ export default function PublicTreePage() {
   const [ancestorData, setAncestorData] = useState<AncestorNode | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  // Chart payloads carry no photos; they're fetched in one batch per chart and
+  // attached to the nodes (cached per link, so re-rooting only asks for new ids).
+  const loadPhotos = usePhotoCache(token || null, (ids) => api.publicPhotos(token, ids));
 
   useEffect(() => {
-    if (!token) return;
+    // Fresh link (first load, or the fragment changed): start over.
+    setTreeName("");
+    setIndividuals([]);
+    setRootId(null);
+    setTreeData(null);
+    setAncestorData(null);
+    setError(null);
+    if (!token) {
+      setLoading(false);
+      setError("This link is missing its access key — ask for the link again");
+      return;
+    }
+    setLoading(true);
     let cancelled = false;
     (async () => {
       try {
@@ -73,15 +94,38 @@ export default function PublicTreePage() {
     let cancelled = false;
     const onErr = (err: unknown) =>
       !cancelled && setError(err instanceof Error ? err.message : "Failed to load chart");
+    // Cached photos attach before the chart goes into state; any the batch
+    // fetch adds afterwards re-render it via a shallow clone of the same root
+    // (same root id, so the chart keeps its pan/zoom rather than refitting).
     if (viewMode === "ancestors") {
-      api.publicAncestors(token, rootId).then((d) => !cancelled && setAncestorData(d)).catch(onErr);
+      api
+        .publicAncestors(token, rootId)
+        .then((d) => {
+          if (cancelled) return;
+          const pending = loadPhotos(d);
+          setAncestorData(d);
+          void pending.then((added) => {
+            if (added) setAncestorData((cur) => (cur === d ? { ...d } : cur));
+          });
+        })
+        .catch(onErr);
     } else {
-      api.publicDescendants(token, rootId).then((d) => !cancelled && setTreeData(d)).catch(onErr);
+      api
+        .publicDescendants(token, rootId)
+        .then((d) => {
+          if (cancelled) return;
+          const pending = loadPhotos(d);
+          setTreeData(d);
+          void pending.then((added) => {
+            if (added) setTreeData((cur) => (cur === d ? { ...d } : cur));
+          });
+        })
+        .catch(onErr);
     }
     return () => {
       cancelled = true;
     };
-  }, [token, rootId, viewMode]);
+  }, [token, rootId, viewMode, loadPhotos]);
 
   const sorted = useMemo(
     () => [...individuals].sort((a, b) => displayName(a).localeCompare(displayName(b))),

@@ -10,13 +10,14 @@ per-individual de-duplication to break cycles.
 """
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session, defer
 
 from auth.deps import get_accessible_tree, require_in_tree
 from database import get_db
 from models import Child, Family, FamilyTree, Individual
+from routers.individuals import PhotoBatchRequest, photos_for
 from schemas import DescendantNode, DescendantUnion, TreeNode
 
 router = APIRouter(prefix="/api/trees/{tree_id}", tags=["visualization"])
@@ -92,11 +93,18 @@ _ANCESTOR_CTE = text(
 # can dominate the wire size of a large tree. Deferral (not omission) is safe
 # ONLY because nothing downstream accesses those attributes; touching one
 # would trigger a per-row lazy load.
+#
+# Photos are deferred too: they are NOT part of the chart payload. A 3,000-node
+# chart with 6 KB thumbnails on every card was 18.5 MB versus under 1 MB
+# without them, so the frontend fetches photos separately, in one batched
+# request for just the ids on screen (POST .../photos), and attaches them to
+# the nodes client-side.
 _UNRENDERED_COLUMNS = (
     defer(Individual.notes),
     defer(Individual.birth_place),
     defer(Individual.death_place),
     defer(Individual.gedcom_xref),
+    defer(Individual.photo_url),
 )
 
 
@@ -114,7 +122,6 @@ def _individual_node(indi: Individual, generation: int) -> TreeNode:
         age=indi.age,
         is_unknown=indi.is_unknown,
         generation=generation,
-        photo_url=indi.photo_url,
     )
 
 
@@ -132,7 +139,6 @@ def _desc_node(indi: Individual, generation: int) -> DescendantNode:
         age=indi.age,
         is_unknown=indi.is_unknown,
         generation=generation,
-        photo_url=indi.photo_url,
     )
 
 
@@ -343,3 +349,19 @@ def ancestors(
     db: Session = Depends(get_db),
 ) -> TreeNode:
     return build_ancestors(db, tree, individual_id)
+
+
+@router.post("/photos", response_model=dict[str, str])
+def batch_photos(
+    payload: PhotoBatchRequest,
+    response: Response,
+    tree: FamilyTree = Depends(get_accessible_tree),
+    db: Session = Depends(get_db),
+) -> dict[str, str]:
+    """Photo thumbnails for a set of people, keyed by id — the companion to the
+    two chart routes above, which no longer carry photos. Ids without a photo
+    (or not in this tree) are simply absent from the result. A POST, because a
+    whole chart's worth of ids does not fit in a URL — but it is a pure read,
+    hence the cache header. Over PHOTO_BATCH_MAX ids is a 422."""
+    response.headers["Cache-Control"] = "private, max-age=300"
+    return photos_for(db, tree, payload.ids)

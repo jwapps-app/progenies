@@ -48,9 +48,13 @@ export interface Individual {
   death_date: string | null;
   death_place: string | null;
   age: string | null;
-  notes: string | null;
-  /** Small profile thumbnail as a data: URL, or null. */
-  photo_url: string | null;
+  /** Free-text notes. ABSENT (not null) on list items — the list endpoint
+   * omits them for payload size; the detail endpoint always carries them.
+   * Code that saves a person back must not treat "absent" as "empty". */
+  notes?: string | null;
+  /** Small profile thumbnail as a data: URL, or null. ABSENT on list items
+   * (see notes); the detail endpoint and the batched photos endpoint serve it. */
+  photo_url?: string | null;
   gedcom_xref: string | null;
   is_unknown: boolean;
   created_at: string;
@@ -82,7 +86,7 @@ export interface Family {
   children: ChildRef[];
 }
 
-/** Individual as served by the unauthenticated /public/{token} endpoints.
+/** Individual as served by the unauthenticated /public endpoints.
  * Deliberately slim — the wire omits tree_id, places, notes, photo, GEDCOM
  * xref, and timestamps so a share link can never leak them. */
 export interface PublicIndividual {
@@ -133,6 +137,8 @@ export interface TreeNode {
   age: string | null;
   is_unknown: boolean;
   generation: number;
+  /** Not on the wire — the chart payload carries no photos. Attached
+   * client-side from the batched photos endpoint (see hooks/usePhotos). */
   photo_url?: string | null;
   /** How this person relates to their parents (biological | adopted | step | foster). */
   relation?: string;
@@ -153,6 +159,7 @@ export interface AncestorNode {
   age: string | null;
   is_unknown: boolean;
   generation: number;
+  /** Not on the wire — attached client-side (see hooks/usePhotos). */
   photo_url?: string | null;
   children: AncestorNode[];
 }

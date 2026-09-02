@@ -1,0 +1,10 @@
+# Test-only dependencies (CI and local test runs). requirements-dev.txt is
+# GENERATED with hashes. Compile it with requirements.txt as a CONSTRAINT so
+# transitive pins shared with the runtime set (anyio, h11, idna, ...) agree —
+# CI installs both files in one hashed `pip install`, which fails on any
+# version disagreement:
+#
+#   pip-compile --generate-hashes --allow-unsafe --strip-extras \
+#       -c requirements.txt -o requirements-dev.txt requirements-dev.in
+pytest==8.2.2
+httpx==0.27.0

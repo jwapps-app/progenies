@@ -41,6 +41,14 @@ class Settings(BaseSettings):
     # console to the internet; dev (docker-compose.yml) opts in.
     DOCS_ENABLED: bool = False
 
+    # Bootstrap registration token. Open registration only ever creates the
+    # FIRST account (the administrator) — but on a freshly deployed, publicly
+    # reachable server that first registration is a race anyone can win. When
+    # this is set, /auth/register additionally requires the caller to present
+    # the same value; when empty (default), first registration stays open and
+    # startup logs a warning if no account exists yet.
+    BOOTSTRAP_TOKEN: str = ""
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property

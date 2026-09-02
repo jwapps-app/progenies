@@ -232,7 +232,10 @@ function ShareDialog({
   const [shareToken, setShareToken] = useState<string | null>(tree.share_token ?? null);
   const [copied, setCopied] = useState(false);
 
-  const shareUrl = shareToken ? `${window.location.origin}/share/${shareToken}` : null;
+  // The token rides in the URL FRAGMENT: browsers never send the fragment to
+  // any server, so the link works without the token ever landing in an access
+  // log. The app lifts it out client-side and sends it as a request header.
+  const shareUrl = shareToken ? `${window.location.origin}/share#${shareToken}` : null;
 
   async function handleCreateLink() {
     setError(null);

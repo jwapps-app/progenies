@@ -51,6 +51,29 @@ class User(Base):
     )
 
 
+class RefreshSession(Base):
+    """One row per live refresh token (i.e. per signed-in device/browser).
+
+    A refresh token is only honoured while its `jti` row exists. Each refresh
+    deletes the presented row and inserts a new one (rotation), so a token that
+    is presented AFTER it was rotated has no row — that is the signature of a
+    stolen-and-replayed cookie, and every session of the user is revoked in
+    response. Multiple devices are multiple rows: logging in on the iPad does
+    not sign out the desktop. Rows cascade away with the user; expired ones
+    are pruned opportunistically on login.
+    """
+
+    __tablename__ = "refresh_sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    jti: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class FamilyTree(Base):
     __tablename__ = "family_trees"
 
@@ -140,7 +163,9 @@ class Individual(Base):
     # Small profile thumbnail stored as a data: URL (resized client-side). Not
     # exported to GEDCOM 5.5; a display convenience for personal trees.
     photo_url: Mapped[str | None] = mapped_column(Text)
-    gedcom_xref: Mapped[str | None] = mapped_column(Text, index=True)
+    # Not indexed: it is never queried on its own — every lookup filters by
+    # tree_id first (already indexed), so a standalone index only cost writes.
+    gedcom_xref: Mapped[str | None] = mapped_column(Text)
     is_unknown: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -184,7 +209,9 @@ class Family(Base):
     # TRUE for known co-parents who are NOT married (a child link without a
     # marriage). Rendered as a dotted connector with no marriage symbol.
     unmarried: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    gedcom_xref: Mapped[str | None] = mapped_column(Text, index=True)
+    # Not indexed: it is never queried on its own — every lookup filters by
+    # tree_id first (already indexed), so a standalone index only cost writes.
+    gedcom_xref: Mapped[str | None] = mapped_column(Text)
 
     tree: Mapped["FamilyTree"] = relationship(back_populates="families")
     children: Mapped[list["Child"]] = relationship(
@@ -221,7 +248,9 @@ class Source(Base):
     publisher: Mapped[str | None] = mapped_column(Text)
     date: Mapped[str | None] = mapped_column(Text)
     notes: Mapped[str | None] = mapped_column(Text)
-    gedcom_xref: Mapped[str | None] = mapped_column(Text, index=True)
+    # Not indexed: it is never queried on its own — every lookup filters by
+    # tree_id first (already indexed), so a standalone index only cost writes.
+    gedcom_xref: Mapped[str | None] = mapped_column(Text)
 
     tree: Mapped["FamilyTree"] = relationship(back_populates="sources")
     citations: Mapped[list["Citation"]] = relationship(

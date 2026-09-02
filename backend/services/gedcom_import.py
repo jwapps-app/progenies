@@ -24,7 +24,6 @@ a round trip per family.
 """
 from __future__ import annotations
 
-import hashlib
 import re
 import uuid
 
@@ -33,6 +32,7 @@ from sqlalchemy.orm import Session
 
 from models import Child, Citation, Family, FamilyTree, GedcomFile, Individual, Source
 from schemas import ImportSummary
+from services.gedcom_export import prune_gedcom_archive
 from services.gedcom_parser import MAX_WARNINGS, GedNode, parse_gedcom
 
 _POINTER = re.compile(r"^@[^@]+@$")
@@ -90,7 +90,12 @@ def _flag(record: GedNode, tag: str) -> bool:
     return node is not None and (node.value or "Y").strip().upper() in ("Y", "YES", "TRUE", "1")
 
 
-def import_gedcom(db: Session, tree: FamilyTree, content: str, filename: str | None) -> ImportSummary:
+def import_gedcom(
+    db: Session, tree: FamilyTree, content: str, filename: str | None, file_hash: str
+) -> ImportSummary:
+    """`file_hash` is the SHA-256 of the upload's RAW bytes, computed once by
+    the route — the same digest the duplicate-import guard matched against, so
+    the archive row and that guard can never disagree."""
     doc = parse_gedcom(content)
     warnings = list(doc.warnings)
 
@@ -101,7 +106,7 @@ def import_gedcom(db: Session, tree: FamilyTree, content: str, filename: str | N
             filename=filename,
             direction="import",
             content=content,
-            file_hash=hashlib.sha256(content.encode("utf-8", "replace")).hexdigest(),
+            file_hash=file_hash,
         )
     )
 
@@ -381,6 +386,10 @@ def import_gedcom(db: Session, tree: FamilyTree, content: str, filename: str | N
     if citations_imported:
         warnings.append(f"Imported {citations_imported} source citation(s)")
 
+    # Keep only the newest few archived uploads (the duplicate-import guard
+    # therefore only remembers those — an identical file older than that is
+    # accepted again, which is the intended trade-off against unbounded growth).
+    prune_gedcom_archive(db, tree.id, "import")
     db.commit()
 
     return ImportSummary(

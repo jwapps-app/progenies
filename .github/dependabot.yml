@@ -1,0 +1,50 @@
+# Weekly dependency update proposals. Everything is pinned (action SHAs, image
+# digests, hashed Python requirements, the npm lockfile), so nothing moves on
+# its own — Dependabot is how the pins move. Minor and patch bumps arrive as
+# one grouped PR per ecosystem to keep the noise down; majors stay separate.
+#
+# Python note: the PRs edit requirements*.txt directly. Those files are
+# generated from requirements*.in with hashes, so after merging a pip bump,
+# update the matching pin in the .in file and regenerate (see the header of
+# backend/requirements.in) so the two stay in agreement.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        update-types: [minor, patch]
+
+  - package-ecosystem: pip
+    directory: /backend
+    schedule:
+      interval: weekly
+    groups:
+      python-minor-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+    groups:
+      npm-minor-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: docker
+    directory: /backend
+    schedule:
+      interval: weekly
+    groups:
+      base-images:
+        update-types: [minor, patch]
+
+  - package-ecosystem: docker
+    directory: /frontend
+    schedule:
+      interval: weekly
+    groups:
+      base-images:
+        update-types: [minor, patch]

@@ -1,0 +1,26 @@
+# Top-level runtime dependencies. requirements.txt is GENERATED from this file
+# with per-file hashes (the image installs with --require-hashes) — edit the
+# pins here, then regenerate:
+#
+#   pip install pip-tools
+#   pip-compile --generate-hashes --allow-unsafe --strip-extras \
+#       -o requirements.txt requirements.in
+#
+# Compile with the same Python the image uses (3.11) so the resolved set
+# matches production: docker run --rm -v "$PWD:/w" -w /w python:3.11-slim ...
+fastapi==0.139.0
+# Pinned explicitly: fastapi only declares `starlette>=0.46`, and the ASGI
+# layer the app runs on should not move without showing up in a diff.
+starlette==1.6.0
+uvicorn[standard]==0.51.0
+sqlalchemy==2.0.51
+psycopg2-binary==2.9.12
+pydantic==2.13.4
+pydantic-settings==2.14.2
+PyJWT==2.13.0
+# bcrypt is called directly (passlib was dropped: unmaintained, and its
+# bcrypt backend broke against bcrypt 5). bcrypt 5 enforces the 72-byte input
+# limit natively — it raises instead of silently truncating — and the auth
+# layer length-checks passwords before hashing.
+bcrypt==5.0.0
+python-multipart==0.0.32

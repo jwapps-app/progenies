@@ -7,14 +7,14 @@ and delete accounts (never their own — so an instance can't lock itself out).
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from auth.deps import get_admin_user, get_current_user
 from auth.security import hash_password
 from database import get_db
-from models import User
+from models import RefreshSession, User
 from schemas import PasswordReset, UserCreate, UserDirectoryOut, UserOut
 
 router = APIRouter(prefix="/api/users", tags=["users"])
@@ -78,8 +78,11 @@ def reset_password(
 ) -> None:
     user = _require_user(db, user_id)
     user.password_hash = hash_password(payload.password)
-    # Revoke every outstanding refresh token — a reset must end old sessions.
+    # Revoke every outstanding token — a reset must end old sessions. The
+    # version bump kills access tokens; dropping the session rows retires the
+    # refresh cookies on every device (see models.RefreshSession).
     user.token_version += 1
+    db.execute(delete(RefreshSession).where(RefreshSession.user_id == user.id))
     db.commit()
 
 

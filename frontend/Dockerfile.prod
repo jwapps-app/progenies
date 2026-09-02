@@ -1,6 +1,12 @@
 # Production image: build the static bundle, serve it with nginx (which also
-# proxies /api and /auth to the backend service — see nginx.conf).
-FROM node:20-alpine AS build
+# proxies /api, /auth and /public to the backend service — see nginx.conf).
+#
+# Base images are pinned by manifest-list digest (the multi-arch index, so
+# amd64 and arm64 builds both resolve): a tag can be re-pointed upstream at
+# any time, a digest cannot. Dependabot (.github/dependabot.yml) proposes the
+# bumps; the trailing comment records what the digest was when pinned.
+FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS build
+# node:22-alpine as of 2026-09-02 (node 20 reached end-of-life 2026-04-30)
 
 WORKDIR /app
 
@@ -13,11 +19,14 @@ ENV VITE_APP_NAME=${VITE_APP_NAME}
 RUN npm run build
 
 # nginx-unprivileged runs as a non-root user (uid 101) and listens on 8080 by
-# default — no root, no privileged port.
-FROM nginxinc/nginx-unprivileged:alpine
+# default — no root, no privileged port. The 1.28 stable branch, not the
+# moving mainline `:alpine` tag.
+FROM nginxinc/nginx-unprivileged:1.28-alpine@sha256:7377697a821c131a924a7105fafbe7414db4e9fcc77a6f08f776f33f141ec3f8
+# nginxinc/nginx-unprivileged:1.28-alpine as of 2026-09-02
 
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY security-headers.conf /etc/nginx/snippets/security-headers.conf
+COPY proxy-backend.conf /etc/nginx/snippets/proxy-backend.conf
 COPY --from=build /app/dist /usr/share/nginx/html
 
 EXPOSE 8080

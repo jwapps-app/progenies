@@ -6,7 +6,9 @@ import reactHooks from "eslint-plugin-react-hooks";
 
 export default tseslint.config(
   {
-    ignores: ["dist/", "dev-dist/", "node_modules/", "*.tsbuildinfo"],
+    // public/ holds static assets served verbatim (e.g. the pre-paint theme.js
+    // guard, a plain browser script) — not TypeScript source to lint.
+    ignores: ["dist/", "dev-dist/", "node_modules/", "public/", "*.tsbuildinfo"],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,

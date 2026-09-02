@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Navigate, Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes, useParams } from "react-router-dom";
 import { useAuth } from "./store/auth";
 import LoginPage from "./pages/Login";
 import PublicTreePage from "./pages/PublicTree";
@@ -44,6 +44,16 @@ function RequireAuth({ children }: { children: JSX.Element }) {
   return children;
 }
 
+/** Share links handed out before the token moved into the URL fragment
+ * (/share/<token>). Bounce straight to the fragment form, replacing the
+ * history entry so the token drops out of the address bar and history — and
+ * do it before anything else renders, so no request ever goes out with the
+ * path form. */
+function LegacyShareRedirect() {
+  const { token } = useParams<{ token: string }>();
+  return <Navigate to={{ pathname: "/share", hash: token ? `#${token}` : "" }} replace />;
+}
+
 export default function App() {
   return (
     <div className="flex h-full flex-col">
@@ -51,8 +61,11 @@ export default function App() {
       <div className="min-h-0 flex-1">
         <Routes>
           <Route path="/login" element={<LoginPage />} />
-      {/* Public share link — no account required; the token is the credential. */}
-      <Route path="/share/:token" element={<PublicTreePage />} />
+      {/* Public share link — no account required; the token is the credential.
+          It lives in the URL FRAGMENT (/share#token), which browsers never send
+          to a server, so it stays out of every access log. */}
+      <Route path="/share" element={<PublicTreePage />} />
+      <Route path="/share/:token" element={<LegacyShareRedirect />} />
       <Route
         path="/"
         element={

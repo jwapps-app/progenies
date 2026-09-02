@@ -8,12 +8,28 @@
 # Required environment variables (set in Portainer's stack editor or a .env):
 #   SECRET_KEY         JWT signing key — generate with: openssl rand -hex 32
 #   POSTGRES_PASSWORD  database password for this instance
+# Strongly recommended on an internet-facing instance:
+#   BOOTSTRAP_TOKEN    when set, creating the FIRST user account requires this
+#                      value — otherwise whoever finds the URL first owns the
+#                      instance. Generate with: openssl rand -hex 16
+#   DATA_PATH          ABSOLUTE host folder for persistent data, e.g.
+#                      /volume1/docker/progenies. The default ./data is only
+#                      right when `docker compose` runs from a checkout: inside
+#                      a Portainer stack, ./data resolves into Portainer's own
+#                      volume — invisible in File Station, not covered by the
+#                      NAS backup job, and orphaned if the stack is recreated.
 # Optional:
 #   HTTP_PORT          host port for the web app (default 8080)
 #   HTTP_BIND          host address to bind the web port to (default 0.0.0.0).
-#                      Hosts running the tunnel/proxy locally can set 127.0.0.1
-#                      so the port isn't reachable from the LAN.
-#   DATA_PATH          host folder for persistent data (default ./data)
+#                      When cloudflared runs on this host, set 127.0.0.1 and
+#                      point the tunnel at http://127.0.0.1:${HTTP_PORT} — the
+#                      port is then unreachable from the LAN, so nothing can
+#                      bypass Cloudflare or forge its CF-Connecting-IP header.
+#   FORWARDED_ALLOW_IPS  sources the backend trusts for X-Forwarded-* headers
+#                      (default: the Docker private ranges, i.e. the web
+#                      container). Everything on this stack's network is
+#                      trusted, which includes the db-backup sidecar; to trust
+#                      only nginx, pin the network subnet and list it here.
 #   APP_NAME           backend/API display name (default Progenies). The web
 #                      bundle's name is baked into the image at build time and
 #                      is NOT affected by this variable.
@@ -21,15 +37,23 @@
 #                      per-commit tags (the git SHA), so a bad deploy can be
 #                      rolled back by pinning IMAGE_TAG to the last good SHA.
 #
-# The web container serves the built SPA and proxies /api and /auth to the
-# backend on the same origin, so a reverse proxy / tunnel only needs to point
-# at HTTP_PORT. The database is not exposed outside the stack network.
+# The web container serves the built SPA and proxies /api, /auth and /public
+# to the backend on the same origin, so a reverse proxy / tunnel only needs to
+# point at HTTP_PORT. The database is not exposed outside the stack network.
 #
-# Backups: the db-backup sidecar runs pg_dump daily at 01:30 into
-# ${DATA_PATH}/backups (gzip, rotated: 7 daily / 4 weekly / 6 monthly). Point
-# the NAS's own backup job at that folder for off-machine copies.
-# The dumps contain every user's data — restrict the folder before first run:
+# Backups: the db-backup sidecar runs pg_dump daily at 01:30 (SCHEDULE below)
+# into ${DATA_PATH}/backups (gzip, rotated: 7 daily / 4 weekly / 6 monthly).
+# Point the NAS's own backup job at that folder for off-machine copies.
+# The dumps contain every user's data in the clear — keep DATA_PATH on an
+# ENCRYPTED shared folder and restrict it before first run:
 #   mkdir -p ${DATA_PATH}/backups && chmod 700 ${DATA_PATH}/backups
+#
+# Container hardening (backend, web): read-only root filesystem with a tmpfs
+# /tmp (nginx-unprivileged keeps its pid and temp files there; uvicorn spools
+# uploads there), no new privileges, all capabilities dropped, an init process
+# to reap zombies, and a pid cap. db/db-backup keep a writable filesystem
+# (postgres needs it) but get the privilege and pid limits. Every service caps
+# its json log so a chatty week can't fill the system volume.
 
 services:
   # mem_limit on every service: generous enough to never bite normal use, but
@@ -38,6 +62,14 @@ services:
     image: postgres:15-alpine
     restart: unless-stopped
     mem_limit: 1g
+    pids_limit: 256
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-progenies}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
@@ -54,6 +86,14 @@ services:
     image: prodrigestivill/postgres-backup-local:15-alpine
     restart: unless-stopped
     mem_limit: 512m
+    pids_limit: 256
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     depends_on:
       db:
         condition: service_healthy
@@ -62,7 +102,8 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-progenies}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB:-genealogy}
-      SCHEDULE: "@daily"
+      # 01:30 every night (container-local time, UTC unless TZ is set).
+      SCHEDULE: "30 1 * * *"
       BACKUP_KEEP_DAYS: "7"
       BACKUP_KEEP_WEEKS: "4"
       BACKUP_KEEP_MONTHS: "6"
@@ -74,6 +115,21 @@ services:
     image: ghcr.io/jwapps-app/progenies-backend:${IMAGE_TAG:-latest}
     restart: unless-stopped
     mem_limit: 1g
+    cpus: "2"
+    pids_limit: 256
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     depends_on:
       db:
         condition: service_healthy
@@ -81,10 +137,16 @@ services:
       APP_NAME: ${APP_NAME:-Progenies}
       DATABASE_URL: postgresql://${POSTGRES_USER:-progenies}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-genealogy}
       SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY (openssl rand -hex 32)}
+      BOOTSTRAP_TOKEN: ${BOOTSTRAP_TOKEN:-}
       ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-60}
       REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS:-30}
       BCRYPT_ROUNDS: ${BCRYPT_ROUNDS:-12}
       CORS_ORIGINS: ${CORS_ORIGINS:-}
+      # uvicorn honours X-Forwarded-For / X-Forwarded-Proto only from these
+      # sources. nginx (the web service) is the one hop that sets them, and it
+      # lives on this stack's Docker network, which Docker allocates from
+      # these private ranges. Check with `docker network inspect` if in doubt.
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-172.16.0.0/12,10.0.0.0/8}
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)\""]
       interval: 15s
@@ -96,12 +158,28 @@ services:
     image: ghcr.io/jwapps-app/progenies-web:${IMAGE_TAG:-latest}
     restart: unless-stopped
     mem_limit: 256m
+    cpus: "1"
+    pids_limit: 256
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     ports:
       # Binds all interfaces by default (NAS/tunnel setups usually need that).
       # Set HTTP_BIND=127.0.0.1 when the tunnel/proxy runs on this host so the
-      # port isn't exposed to the LAN.
+      # port isn't exposed to the LAN (see the header).
       - "${HTTP_BIND:-0.0.0.0}:${HTTP_PORT:-8080}:8080"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO /dev/null http://localhost:8080/ || exit 1"]
