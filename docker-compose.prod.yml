@@ -182,7 +182,10 @@ services:
       # port isn't exposed to the LAN (see the header).
       - "${HTTP_BIND:-0.0.0.0}:${HTTP_PORT:-8080}:8080"
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO /dev/null http://localhost:8080/ || exit 1"]
+      # 127.0.0.1, not localhost: inside the container localhost resolves to ::1
+      # first and busybox wget stops at the first address, so a probe against
+      # "localhost" is refused even while nginx is serving perfectly on IPv4.
+      test: ["CMD-SHELL", "wget -qO /dev/null http://127.0.0.1:8080/ || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
