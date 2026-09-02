@@ -58,7 +58,7 @@ jobs:
         working-directory: backend
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/progenies_test
-          SECRET_KEY: ci-test-secret-key
+          SECRET_KEY: ci-test-secret-key-0123456789abcdef0123456789abcdef
           BCRYPT_ROUNDS: "4"
         run: python -m pytest tests/ -q
 
