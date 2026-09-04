@@ -8,15 +8,15 @@
 #
 # Compile with the same Python the image uses (3.11) so the resolved set
 # matches production: docker run --rm -v "$PWD:/w" -w /w python:3.11-slim ...
-fastapi==0.139.0
+fastapi==0.141.1
 # Pinned explicitly: fastapi only declares `starlette>=0.46`, and the ASGI
 # layer the app runs on should not move without showing up in a diff.
 starlette==1.6.0
-uvicorn[standard]==0.51.0
-sqlalchemy==2.0.51
+uvicorn[standard]==0.52.4
+sqlalchemy==2.0.52
 psycopg2-binary==2.9.12
-pydantic==2.13.4
-pydantic-settings==2.14.2
+pydantic==2.13.5
+pydantic-settings==2.15.0
 PyJWT==2.13.0
 # bcrypt is called directly (passlib was dropped: unmaintained, and its
 # bcrypt backend broke against bcrypt 5). bcrypt 5 enforces the 72-byte input
