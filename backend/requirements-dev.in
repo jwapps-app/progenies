@@ -7,4 +7,4 @@
 #   pip-compile --generate-hashes --allow-unsafe --strip-extras \
 #       -c requirements.txt -o requirements-dev.txt requirements-dev.in
 pytest==8.2.2
-httpx==0.27.0
+httpx==0.28.1
