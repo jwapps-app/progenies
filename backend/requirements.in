@@ -17,7 +17,7 @@ sqlalchemy==2.0.51
 psycopg2-binary==2.9.12
 pydantic==2.13.4
 pydantic-settings==2.14.2
-PyJWT==2.13.0
+PyJWT==2.15.1
 # bcrypt is called directly (passlib was dropped: unmaintained, and its
 # bcrypt backend broke against bcrypt 5). bcrypt 5 enforces the 72-byte input
 # limit natively — it raises instead of silently truncating — and the auth
