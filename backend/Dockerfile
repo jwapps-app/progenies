@@ -2,7 +2,7 @@
 # builds both resolve): a tag can be re-pointed upstream at any time, a digest
 # cannot. Dependabot (.github/dependabot.yml) proposes the bumps; the trailing
 # comment records what the digest was when pinned.
-FROM python:3.11-slim@sha256:9534e5a8e315485d4061ed659af0fd78a284c015f9b73661b41d6bab25604534
+FROM python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170
 # python:3.11-slim as of 2026-09-02
 
 ENV PYTHONUNBUFFERED=1 \
