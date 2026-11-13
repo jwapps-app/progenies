@@ -32,7 +32,7 @@
     "typescript-eslint": "^8.64.0",
     "vite": "^5.3.1",
     "vite-plugin-pwa": "^0.20.0",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.12"
   },
   "license": "AGPL-3.0-only"
 }
