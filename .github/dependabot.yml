@@ -1,10 +1,24 @@
-# Weekly dependency update proposals. Everything is pinned (action SHAs, image
-# digests, hashed Python requirements, the npm lockfile), so nothing moves on
-# its own — Dependabot is how the pins move. Minor and patch bumps arrive as
-# one grouped PR per ecosystem to keep the noise down; majors stay separate.
+# Security updates only. Everything here is pinned (action SHAs, image
+# digests, hashed Python requirements, the npm lockfile), and the pins move in
+# two ways:
 #
-# Python note: the PRs edit requirements*.txt directly. Those files are
-# generated from requirements*.in with hashes, so after merging a pip bump,
+#   - A published vulnerability: Dependabot opens a pull request for the
+#     affected package (repository setting "Dependabot security updates"),
+#     and the weekly audit job in publish.yml fails as a second signal.
+#   - Everything else: deliberately, by hand, one tested step at a time.
+#
+# `open-pull-requests-limit: 0` is what turns off the routine version-update
+# proposals while leaving security updates on. They were mostly noise for a
+# project this size: weekly grouped bumps whose lockfiles did not always
+# install, and major jumps (a new Python, a new router) that need a planned
+# migration rather than a one-line merge.
+#
+# Docker base images have no entry: Dependabot has no security updates for
+# them, and the digests are bumped by hand alongside the dependency sets
+# compiled for that image.
+#
+# Python note: a security pull request edits requirements*.txt directly. Those
+# files are generated from requirements*.in with hashes, so after merging one,
 # update the matching pin in the .in file and regenerate (see the header of
 # backend/requirements.in) so the two stay in agreement.
 version: 2
@@ -13,38 +27,16 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    groups:
-      actions:
-        update-types: [minor, patch]
+    open-pull-requests-limit: 0
 
   - package-ecosystem: pip
     directory: /backend
     schedule:
       interval: weekly
-    groups:
-      python-minor-patch:
-        update-types: [minor, patch]
+    open-pull-requests-limit: 0
 
   - package-ecosystem: npm
     directory: /frontend
     schedule:
       interval: weekly
-    groups:
-      npm-minor-patch:
-        update-types: [minor, patch]
-
-  - package-ecosystem: docker
-    directory: /backend
-    schedule:
-      interval: weekly
-    groups:
-      base-images:
-        update-types: [minor, patch]
-
-  - package-ecosystem: docker
-    directory: /frontend
-    schedule:
-      interval: weekly
-    groups:
-      base-images:
-        update-types: [minor, patch]
+    open-pull-requests-limit: 0
